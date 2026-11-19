@@ -1,4 +1,22 @@
-import { apiRequest, getStoredSession, setStoredSession } from './api.js';
+import {
+  createUserWithEmailAndPassword,
+  getRedirectResult,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signInWithRedirect,
+  updateProfile
+} from 'firebase/auth';
+import {
+  assertFirebaseConfigured,
+  auth,
+  googleProvider,
+  isFirebaseConfigReady,
+  mapFirebaseAuthError,
+  waitForAuthReady
+} from '../config/firebaseConfig.js';
+import { apiRequest } from './api.js';
 import { renderIcons, setButtonLoading, showToast } from './main.js';
 
 function getPostAuthRedirect() {
@@ -10,41 +28,10 @@ function getPostAuthRedirect() {
   return '/dashboard.html';
 }
 
-async function handleOAuthHashReturn(showAuthMessage) {
-  const rawHash = window.location.hash || '';
-  if (!rawHash || rawHash.length < 2) return false;
-
-  const hashParams = new URLSearchParams(rawHash.slice(1));
-  const oauthError = hashParams.get('oauth_error');
-  const oauthTicket = hashParams.get('oauth_ticket');
-
-  if (!oauthError && !oauthTicket) return false;
-
-  // Strip sensitive OAuth parameters from URL immediately
-  window.history.replaceState(null, '', window.location.pathname + window.location.search);
-
-  if (oauthError) {
-    showAuthMessage(oauthError, true);
-    return true;
-  }
-
-  if (oauthTicket) {
-    showAuthMessage('Completing Google sign-in...', false);
-    try {
-      const data = await apiRequest('/api/auth/google/complete', {
-        method: 'POST',
-        body: { ticket: oauthTicket },
-        requiresAuth: false
-      });
-      setStoredSession(data);
-      window.location.href = data.redirectPath || getPostAuthRedirect();
-      return true;
-    } catch (err) {
-      showAuthMessage(err.message || 'Google sign-in could not be completed. Please try again.', true);
-      return true;
-    }
-  }
-  return false;
+async function finalizeAuthenticatedSession(firebaseUser) {
+  await firebaseUser.getIdToken(true);
+  await apiRequest('/api/auth/me');
+  window.location.href = getPostAuthRedirect();
 }
 
 async function initAuthPages() {
@@ -58,41 +45,57 @@ async function initAuthPages() {
     statusBanner.className = isError ? 'auth-alert auth-alert-error' : 'auth-alert auth-alert-success';
   };
 
-  const handledHash = await handleOAuthHashReturn(showAuthMessage);
-  if (handledHash) return;
-
-  // If a stored session is already valid, verify silently and proceed to dashboard
-  const existingSession = getStoredSession();
-  if (existingSession) {
+  if (!isFirebaseConfigReady()) {
+    showAuthMessage(
+      'Firebase Authentication is not configured in this build yet. Add VITE_FIREBASE_API_KEY and VITE_FIREBASE_APP_ID for project avenora-ai in Vercel.',
+      true
+    );
+  } else {
     try {
-      await apiRequest('/api/auth/me');
-      window.location.href = getPostAuthRedirect();
-      return;
-    } catch {
-      // Token invalid/expired; stay on auth page cleanly
+      const redirectResult = await getRedirectResult(auth);
+      if (redirectResult?.user) {
+        showAuthMessage('Completing Google sign-in...', false);
+        await finalizeAuthenticatedSession(redirectResult.user);
+        return;
+      }
+    } catch (err) {
+      showAuthMessage(mapFirebaseAuthError(err, 'Google sign-in could not be completed.'), true);
+    }
+
+    const existingUser = await waitForAuthReady();
+    if (existingUser) {
+      try {
+        await existingUser.getIdToken();
+        await apiRequest('/api/auth/me');
+        window.location.href = getPostAuthRedirect();
+        return;
+      } catch {
+        // Backend verification failed or expired; stay on auth page cleanly
+      }
     }
   }
 
   const googleBtn = document.getElementById('google-auth-btn');
   if (googleBtn) {
     googleBtn.addEventListener('click', async () => {
-      setButtonLoading(googleBtn, true, 'Redirecting to Google...');
+      setButtonLoading(googleBtn, true, 'Signing in with Google...');
       try {
-        const res = await apiRequest('/api/auth/google/init', {
-          method: 'POST',
-          body: {
-            origin: window.location.origin,
-            redirectPath: getPostAuthRedirect()
-          },
-          requiresAuth: false,
-          timeoutMs: 15000
-        });
-        if (!res.authUrl) {
-          throw new Error('Google sign-in URL was not returned by backend.');
-        }
-        window.location.assign(res.authUrl);
+        assertFirebaseConfigured();
+        const credential = await signInWithPopup(auth, googleProvider);
+        showAuthMessage('Google account verified. Opening workspace...', false);
+        await finalizeAuthenticatedSession(credential.user);
       } catch (err) {
-        showAuthMessage(err.message || 'Unable to connect to Google Sign-In.', true);
+        if (err?.code === 'auth/popup-blocked') {
+          showAuthMessage(mapFirebaseAuthError(err), false);
+          try {
+            await signInWithRedirect(auth, googleProvider);
+            return;
+          } catch (redirectErr) {
+            showAuthMessage(mapFirebaseAuthError(redirectErr, 'Unable to start Google Sign-In.'), true);
+          }
+        } else {
+          showAuthMessage(mapFirebaseAuthError(err, 'Unable to complete Google Sign-In.'), true);
+        }
         setButtonLoading(googleBtn, false);
       }
     });
@@ -113,15 +116,11 @@ async function initAuthPages() {
 
       setButtonLoading(submitBtn, true, 'Signing in...');
       try {
-        const data = await apiRequest('/api/auth/login', {
-          method: 'POST',
-          body: { email, password },
-          requiresAuth: false
-        });
-        setStoredSession(data);
-        window.location.href = getPostAuthRedirect();
+        assertFirebaseConfigured();
+        const credential = await signInWithEmailAndPassword(auth, email, password);
+        await finalizeAuthenticatedSession(credential.user);
       } catch (err) {
-        showAuthMessage(err.message || 'Sign in failed. Please try again.', true);
+        showAuthMessage(mapFirebaseAuthError(err, 'Sign in failed. Please try again.'), true);
         setButtonLoading(submitBtn, false);
       }
     });
@@ -135,15 +134,12 @@ async function initAuthPages() {
       }
       resetBtn.disabled = true;
       try {
-        const res = await apiRequest('/api/auth/reset-password', {
-          method: 'POST',
-          body: { email },
-          requiresAuth: false
-        });
-        showAuthMessage(res.message || `Password reset instructions sent to ${email}.`, false);
+        assertFirebaseConfigured();
+        await sendPasswordResetEmail(auth, email);
+        showAuthMessage(`Password reset instructions sent to ${email}.`, false);
         showToast('Password reset email dispatched.', 'success');
       } catch (err) {
-        showAuthMessage(err.message || 'Unable to send reset email.', true);
+        showAuthMessage(mapFirebaseAuthError(err, 'Unable to send reset email.'), true);
       } finally {
         resetBtn.disabled = false;
       }
@@ -171,15 +167,13 @@ async function initAuthPages() {
 
       setButtonLoading(submitBtn, true, 'Creating account...');
       try {
-        const data = await apiRequest('/api/auth/register', {
-          method: 'POST',
-          body: { displayName, email, password },
-          requiresAuth: false
-        });
-        setStoredSession(data);
-        window.location.href = '/dashboard.html';
+        assertFirebaseConfigured();
+        const credential = await createUserWithEmailAndPassword(auth, email, password);
+        await updateProfile(credential.user, { displayName });
+        sendEmailVerification(credential.user).catch(() => {});
+        await finalizeAuthenticatedSession(credential.user);
       } catch (err) {
-        showAuthMessage(err.message || 'Account creation failed. Please try again.', true);
+        showAuthMessage(mapFirebaseAuthError(err, 'Account creation failed. Please try again.'), true);
         setButtonLoading(submitBtn, false);
       }
     });

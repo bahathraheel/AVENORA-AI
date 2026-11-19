@@ -22,9 +22,9 @@ An editorial, earthy-luxury **AI Event Planning Platform** engineered in a clean
 
 | Layer | Directory / Service | Responsibility | Hosting |
 | :--- | :--- | :--- | :--- |
-| **1. Frontend** | `frontend/` | HTML5, CSS3, Vanilla ES Modules, Chart.js, Lucide Icons, static imagery. Contains **zero API keys**, zero React/Next.js, and zero Firebase client credentials. | **Vercel** (`https://avenoraai3.vercel.app`) |
-| **2. Backend** | `backend/` | Node.js + Express REST API (`/health`, `/api/auth/*`, `/api/users/*`, `/api/events/*`, `/api/ai/*`), Helmet, strict CORS allowlisting, IPv6-safe rate limiting, Firebase ID token verification, and server-side `@google/genai`. | **Render** (`https://avenora-ai.onrender.com`) |
-| **3. Database & Auth** | Firebase Project `avenora-ai` | Firebase Authentication + Cloud Firestore accessed exclusively through authenticated backend endpoints. Supports keyless Google Cloud ADC/WIF or user-token scoped Firestore REST enforcing `firestore.rules`. | **Firebase** |
+| **1. Frontend** | `frontend/` | HTML5, CSS3, Vanilla ES Modules, Firebase Web SDK Auth (`avenora-ai`), Chart.js, Lucide Icons, static imagery. Contains **zero Gemini or Admin secrets** and zero React/Next.js. | **Vercel** (`https://avenoraai3.vercel.app`) |
+| **2. Backend** | `backend/` | Node.js + Express REST API (`/health`, `/api/auth/me`, `/api/users/*`, `/api/events/*`, `/api/ai/*`), Helmet, strict CORS allowlisting, IPv6-safe rate limiting, Firebase Admin ID token verification, and server-side `@google/genai`. | **Render** (`https://avenora-ai.onrender.com`) |
+| **3. Database & Auth** | Firebase Project `avenora-ai` | Native Firebase Authentication (Google Sign-In + Email/Password) + Cloud Firestore accessed through authenticated backend endpoints. Supports keyless Google Cloud ADC/WIF or user-token scoped Firestore REST enforcing `firestore.rules`. | **Firebase** |
 
 ---
 
@@ -48,11 +48,11 @@ An editorial, earthy-luxury **AI Event Planning Platform** engineered in a clean
 
 ## Security & Authentication Architecture
 
-- **Zero Exposed Secrets in Frontend**: Neither `GEMINI_API_KEY`, service account credentials, `GOOGLE_CLIENT_SECRET`, nor `FIREBASE_WEB_API_KEY` appear anywhere inside `frontend/`.
-- **Backend-Mediated Authentication (`avenora-ai`)**:
-  - **Email & Password**: `POST /api/auth/register` and `/api/auth/login` verify credentials via Google Identity Toolkit REST on the backend using server-only `FIREBASE_WEB_API_KEY`.
-  - **Google Sign-In (Keyless Redirect Flow)**: `POST /api/auth/google/init` → Google OAuth 2.0 consent → `GET /api/auth/google/callback` → Identity Toolkit `accounts:signInWithIdp` (`avenora-ai`) → sealed one-time ticket → `POST /api/auth/google/complete`. Requires zero service account private keys.
-- **Per-User Firestore Isolation**: Every API endpoint validates `Authorization: Bearer <FIREBASE_ID_TOKEN>` with `adminAuth.verifyIdToken()` (using Google's public x509 certificates—no private key needed) and scopes reads/writes strictly to `users/{req.user.uid}/events/{eventId}/...`.
+- **Zero Exposed Secrets in Frontend**: Neither `GEMINI_API_KEY` nor Firebase Admin credentials ever appear inside `frontend/`.
+- **Native Firebase Authentication (`avenora-ai`)**:
+  - **Google Sign-In**: `GoogleAuthProvider` + `signInWithPopup` (with automatic `signInWithRedirect` fallback if popups are blocked). Requires zero custom `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` OAuth backend flows.
+  - **Email & Password**: `signInWithEmailAndPassword`, `createUserWithEmailAndPassword`, `sendPasswordResetEmail`, and `sendEmailVerification` directly via Firebase Web SDK.
+- **Per-User Firestore Isolation**: After authentication, the frontend sends `Authorization: Bearer <FIREBASE_ID_TOKEN>` from `currentUser.getIdToken()`. Every backend API endpoint verifies that token via `adminAuth.verifyIdToken()` and scopes Firestore reads/writes strictly to `users/{req.user.uid}/events/{eventId}/...`.
 - **Keyless & Admin Dual-Mode Firestore**: Uses `firebase-admin` `applicationDefault()` / service account credentials when available, and automatically runs user-token authenticated Cloud Firestore REST calls enforcing `firestore.rules` when Google Cloud restricts service account key creation.
 - **Server-Side Gemini Proxy**: All 8 Gemini AI tools execute on `backend/services/geminiService.js` with strict rate limiting (`express-rate-limit` with `ipKeyGenerator`), payload sanitization, and schema validation.
 
@@ -67,7 +67,8 @@ AVENORA-AI/
 │   │   budget.html, checklist.html, guests.html, vendors.html, timeline.html,
 │   │   theme-studio.html, copilot.html, settings.html
 │   ├── config/
-│   │   └── apiConfig.js              # Centralized API_BASE_URL (https://avenora-ai.onrender.com)
+│   │   ├── apiConfig.js              # Centralized API_BASE_URL (https://avenora-ai.onrender.com)
+│   │   └── firebaseConfig.js         # Firebase Web SDK Auth config for project avenora-ai
 │   ├── css/                          # Design tokens, components, dashboard & responsive styles
 │   ├── js/                           # Modular Vanilla JS controllers (api.js + module scripts)
 │   ├── assets/images/                # Editorial visual assets
@@ -103,11 +104,13 @@ AVENORA-AI/
 
 ## Local Development
 
-### 1. Configure Backend Environment
+### 1. Configure Environment Files
 ```bash
 cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
 ```
-Fill in `GEMINI_API_KEY`, `FIREBASE_PROJECT_ID=avenora-ai`, `FIREBASE_WEB_API_KEY`, and (for Google Sign-In) `GOOGLE_CLIENT_ID` & `GOOGLE_CLIENT_SECRET`.
+- In `backend/.env`: fill in `GEMINI_API_KEY` and `FIREBASE_PROJECT_ID=avenora-ai`.
+- In `frontend/.env`: fill in your public `VITE_FIREBASE_*` Web App keys from Firebase Console (`avenora-ai`).
 
 ### 2. Run Backend & Frontend Independently
 
@@ -132,19 +135,24 @@ VITE_API_BASE_URL=http://localhost:5000 npm run dev
   - `NODE_ENV=production`
   - `GEMINI_API_KEY=...`
   - `FIREBASE_PROJECT_ID=avenora-ai`
-  - `FIREBASE_WEB_API_KEY=...`
-  - `GOOGLE_CLIENT_ID=...`
-  - `GOOGLE_CLIENT_SECRET=...`
   - `FRONTEND_URL=https://avenoraai3.vercel.app`
-  - `BACKEND_URL=https://avenora-ai.onrender.com`
-- **Google OAuth Redirect URI**: Add `https://avenora-ai.onrender.com/api/auth/google/callback` to Google Cloud Console → Credentials → Authorized redirect URIs.
 
 ### Frontend → Vercel (`https://avenoraai3.vercel.app`)
 - **Root Directory**: `frontend`
 - **Build Command**: `npm run build`
 - **Output Directory**: `dist`
-- **Environment Variable**:
+- **Environment Variables**:
   - `VITE_API_BASE_URL=https://avenora-ai.onrender.com`
+  - `VITE_FIREBASE_API_KEY=...`
+  - `VITE_FIREBASE_AUTH_DOMAIN=avenora-ai.firebaseapp.com`
+  - `VITE_FIREBASE_PROJECT_ID=avenora-ai`
+  - `VITE_FIREBASE_STORAGE_BUCKET=avenora-ai.firebasestorage.app`
+  - `VITE_FIREBASE_MESSAGING_SENDER_ID=...`
+  - `VITE_FIREBASE_APP_ID=...`
+
+### Firebase Console (`avenora-ai`) Checklist
+- Enable **Google** and **Email/Password** under **Authentication → Sign-in method**.
+- Add `avenoraai3.vercel.app` under **Authentication → Settings → Authorized domains**.
 
 ---
 

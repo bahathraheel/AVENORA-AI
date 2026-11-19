@@ -27,15 +27,6 @@ export async function updateProfileHandler(req, res, next) {
 
     if (hasAdminCredentials()) {
       await adminAuth.updateUser(req.user.uid, { displayName }).catch(() => {});
-    } else if (process.env.FIREBASE_WEB_API_KEY && req.idToken) {
-      await fetch(
-        `https://identitytoolkit.googleapis.com/v1/accounts:update?key=${encodeURIComponent(process.env.FIREBASE_WEB_API_KEY.trim())}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken: req.idToken, displayName, returnSecureToken: false })
-        }
-      ).catch(() => {});
     }
 
     const profile = await updateUserProfile(req.user.uid, req.body, req.idToken);

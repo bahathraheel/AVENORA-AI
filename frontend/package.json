@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "chart.js": "^4.6.1",
+    "firebase": "^13.4.0",
     "lucide": "^1.75.0"
   },
   "devDependencies": {

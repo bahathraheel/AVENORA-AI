@@ -1,5 +1,7 @@
+import { signOut } from 'firebase/auth';
 import { createIcons, icons } from 'lucide';
-import { apiRequest, clearStoredSession, getStoredSession } from './api.js';
+import { auth, isFirebaseConfigReady, waitForAuthReady } from '../config/firebaseConfig.js';
+import { apiRequest } from './api.js';
 
 export function renderIcons() {
   createIcons({ icons });
@@ -187,8 +189,10 @@ export function setStoredEventId(eventId) {
   }
 }
 
-export function signOutUser() {
-  clearStoredSession();
+export async function signOutUser() {
+  if (auth) {
+    await signOut(auth).catch(() => {});
+  }
   localStorage.removeItem('avenora_active_event_id');
   window.location.href = '/login.html';
 }
@@ -353,8 +357,14 @@ export async function initProtectedPage({ activeKey, pageTitle, onReady, onEvent
     `;
   }
 
-  const session = getStoredSession();
-  if (!session) {
+  if (!isFirebaseConfigReady()) {
+    finishTopProgress();
+    window.location.href = `/login.html?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+    return;
+  }
+
+  const firebaseUser = await waitForAuthReady();
+  if (!firebaseUser) {
     finishTopProgress();
     window.location.href = `/login.html?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`;
     return;
@@ -391,7 +401,9 @@ export async function initProtectedPage({ activeKey, pageTitle, onReady, onEvent
   } catch (err) {
     console.error('Workspace initialization error:', err);
     if (err.status === 401) {
-      clearStoredSession();
+      if (auth) {
+        await signOut(auth).catch(() => {});
+      }
       window.location.href = `/login.html?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`;
       return;
     }

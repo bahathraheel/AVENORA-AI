@@ -1,3 +1,5 @@
+import { sendEmailVerification, sendPasswordResetEmail, updateProfile } from 'firebase/auth';
+import { auth, mapFirebaseAuthError } from '../config/firebaseConfig.js';
 import { apiRequest } from './api.js';
 import {
   escapeHtml,
@@ -110,6 +112,9 @@ initProtectedPage({
       const saveBtn = document.getElementById('save-settings-btn');
       setButtonLoading(saveBtn, true, 'Saving...');
       try {
+        if (auth?.currentUser) {
+          await updateProfile(auth.currentUser, { displayName }).catch(() => {});
+        }
         await apiRequest('/api/users/me', {
           method: 'PUT',
           body: {
@@ -130,25 +135,23 @@ initProtectedPage({
     };
 
     document.getElementById('send-reset-btn').onclick = async () => {
-      if (!user.email) return;
+      const targetEmail = auth?.currentUser?.email || user.email;
+      if (!targetEmail || !auth) return;
       try {
-        await apiRequest('/api/auth/reset-password', {
-          method: 'POST',
-          body: { email: user.email },
-          requiresAuth: false
-        });
-        showToast(`Password reset link sent to ${user.email}.`, 'success');
+        await sendPasswordResetEmail(auth, targetEmail);
+        showToast(`Password reset link sent to ${targetEmail}.`, 'success');
       } catch (err) {
-        showToast(err.message, 'error');
+        showToast(mapFirebaseAuthError(err, 'Unable to send reset email.'), 'error');
       }
     };
 
     document.getElementById('resend-verify-btn')?.addEventListener('click', async () => {
+      if (!auth?.currentUser) return;
       try {
-        await apiRequest('/api/auth/resend-verification', { method: 'POST' });
-        showToast(`Verification link sent to ${user.email}.`, 'success');
+        await sendEmailVerification(auth.currentUser);
+        showToast(`Verification link sent to ${auth.currentUser.email || user.email}.`, 'success');
       } catch (err) {
-        showToast(err.message, 'error');
+        showToast(mapFirebaseAuthError(err, 'Unable to send verification email.'), 'error');
       }
     });
 

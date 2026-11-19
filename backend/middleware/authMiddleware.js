@@ -1,4 +1,5 @@
 import { adminAuth, assertFirebaseAdminReady } from '../config/firebaseAdmin.js';
+import { runWithUserToken } from '../utils/authContext.js';
 
 export async function verifyAuthToken(req, res, next) {
   const authHeader = req.headers.authorization || '';
@@ -25,7 +26,8 @@ export async function verifyAuthToken(req, res, next) {
       emailVerified: Boolean(decoded.email_verified),
       provider: decoded.firebase?.sign_in_provider || 'password'
     };
-    return next();
+    req.idToken = idToken;
+    return runWithUserToken(idToken, () => next());
   } catch (err) {
     if (err?.statusCode === 503) {
       return res.status(503).json({ error: err.message });

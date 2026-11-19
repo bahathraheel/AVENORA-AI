@@ -1,15 +1,20 @@
 import crypto from 'crypto';
-import { adminAuth, assertFirebaseAdminReady, FIREBASE_PROJECT_ID } from '../config/firebaseAdmin.js';
+import {
+  adminAuth,
+  assertFirebaseAdminReady,
+  hasAdminCredentials
+} from '../config/firebaseAdmin.js';
 import { ensureUserProfile } from '../services/firebaseService.js';
 import { sanitizeText } from '../utils/sanitize.js';
 
+const PRODUCTION_VERCEL_ORIGIN = 'https://avenoraai3.vercel.app';
 const usedOAuthJtis = new Map();
 
 function getWebApiKey() {
   const key = (process.env.FIREBASE_WEB_API_KEY || '').trim();
   if (!key) {
     const err = new Error(
-      'Backend Firebase Identity Toolkit key (FIREBASE_WEB_API_KEY) is not configured yet. Add it to backend environment variables so the backend can verify sign-ins securely.'
+      'Backend Firebase Identity Toolkit key (FIREBASE_WEB_API_KEY) is not configured yet. Add it to Render backend environment variables.'
     );
     err.statusCode = 503;
     throw err;
@@ -19,6 +24,7 @@ function getWebApiKey() {
 
 function getServerSecretKey() {
   const seed =
+    process.env.SESSION_SIGNING_SECRET ||
     process.env.FIREBASE_PRIVATE_KEY ||
     process.env.GOOGLE_CLIENT_SECRET ||
     process.env.GEMINI_API_KEY ||
@@ -104,18 +110,20 @@ function resolveAllowedFrontendOrigin(requestedOrigin, req) {
     .map((s) => s.trim().replace(/\/+$/, ''))
     .filter(Boolean);
 
+  const allowed = Array.from(new Set([PRODUCTION_VERCEL_ORIGIN, ...configured]));
   const cleanRequested = String(requestedOrigin || '').trim().replace(/\/+$/, '');
+  const isProd = process.env.NODE_ENV === 'production';
+
   if (cleanRequested) {
-    if (configured.includes(cleanRequested)) return cleanRequested;
-    if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(cleanRequested)) return cleanRequested;
-    if (configured.some((o) => o.endsWith('.netlify.app')) && /^https:\/\/[a-z0-9-]+--[a-z0-9-]+\.netlify\.app$/i.test(cleanRequested)) {
+    if (allowed.includes(cleanRequested)) return cleanRequested;
+    if (!isProd && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(cleanRequested)) {
       return cleanRequested;
     }
     const reqOrigin = `${req.protocol}://${req.get('host')}`;
     if (cleanRequested === reqOrigin) return cleanRequested;
   }
 
-  return configured[0] || `${req.protocol}://${req.get('host')}`;
+  return configured[0] || PRODUCTION_VERCEL_ORIGIN;
 }
 
 function resolveBackendBaseUrl(req) {
@@ -144,22 +152,43 @@ export async function register(req, res, next) {
       returnSecureToken: true
     });
 
-    await adminAuth.updateUser(authData.localId, { displayName });
-    const profile = await ensureUserProfile({
-      uid: authData.localId,
-      email,
-      displayName
-    });
+    let activeIdToken = authData.idToken;
+    let activeRefreshToken = authData.refreshToken;
+    let activeExpiresIn = Number(authData.expiresIn) || 3600;
+
+    // Update displayName cleanly without requiring a service account private key
+    const updatedAccount = await callIdentityToolkit('accounts:update', {
+      idToken: activeIdToken,
+      displayName,
+      returnSecureToken: true
+    }).catch(() => null);
+
+    if (updatedAccount?.idToken) {
+      activeIdToken = updatedAccount.idToken;
+      activeRefreshToken = updatedAccount.refreshToken || activeRefreshToken;
+      activeExpiresIn = Number(updatedAccount.expiresIn) || activeExpiresIn;
+    } else if (hasAdminCredentials()) {
+      await adminAuth.updateUser(authData.localId, { displayName }).catch(() => {});
+    }
+
+    const profile = await ensureUserProfile(
+      {
+        uid: authData.localId,
+        email,
+        displayName
+      },
+      activeIdToken
+    );
 
     callIdentityToolkit('accounts:sendOobCode', {
       requestType: 'VERIFY_EMAIL',
-      idToken: authData.idToken
+      idToken: activeIdToken
     }).catch(() => {});
 
     return res.status(201).json({
-      idToken: authData.idToken,
-      refreshToken: authData.refreshToken,
-      expiresIn: Number(authData.expiresIn) || 3600,
+      idToken: activeIdToken,
+      refreshToken: activeRefreshToken,
+      expiresIn: activeExpiresIn,
       user: {
         uid: authData.localId,
         email,
@@ -189,22 +218,34 @@ export async function login(req, res, next) {
       returnSecureToken: true
     });
 
-    const userRecord = await adminAuth.getUser(authData.localId);
-    const profile = await ensureUserProfile({
-      uid: userRecord.uid,
-      email: userRecord.email || email,
-      displayName: userRecord.displayName || authData.displayName || ''
-    });
+    // Keyless lookup via user ID token (works even without service account private key)
+    const lookupRes = await callIdentityToolkit('accounts:lookup', {
+      idToken: authData.idToken
+    }).catch(() => null);
+    const accountInfo = lookupRes?.users?.[0] || {};
+
+    const resolvedEmail = accountInfo.email || authData.email || email;
+    const resolvedName = accountInfo.displayName || authData.displayName || '';
+    const emailVerified = Boolean(accountInfo.emailVerified);
+
+    const profile = await ensureUserProfile(
+      {
+        uid: authData.localId,
+        email: resolvedEmail,
+        displayName: resolvedName
+      },
+      authData.idToken
+    );
 
     return res.json({
       idToken: authData.idToken,
       refreshToken: authData.refreshToken,
       expiresIn: Number(authData.expiresIn) || 3600,
       user: {
-        uid: userRecord.uid,
-        email: userRecord.email || email,
-        displayName: userRecord.displayName || profile.displayName,
-        emailVerified: Boolean(userRecord.emailVerified)
+        uid: authData.localId,
+        email: resolvedEmail,
+        displayName: resolvedName || profile.displayName,
+        emailVerified
       },
       profile
     });
@@ -290,7 +331,7 @@ export async function googleAuthInit(req, res, next) {
     const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
     if (!clientId || !clientSecret) {
       return res.status(503).json({
-        error: 'Google OAuth is not configured on the backend yet. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in backend environment variables.'
+        error: 'Google OAuth is not configured on the backend yet. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Render environment variables.'
       });
     }
 
@@ -362,55 +403,34 @@ export async function googleAuthCallback(req, res) {
     });
 
     const tokenData = await tokenRes.json().catch(() => ({}));
-    if (!tokenRes.ok || !tokenData.access_token) {
+    if (!tokenRes.ok || (!tokenData.id_token && !tokenData.access_token)) {
       throw new Error(tokenData.error_description || 'Failed to exchange Google authorization code.');
     }
 
-    const profileRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { Authorization: `Bearer ${tokenData.access_token}` }
-    });
-    const googleProfile = await profileRes.json().catch(() => ({}));
-    if (!profileRes.ok || !googleProfile.email) {
-      throw new Error('Unable to retrieve verified Google account email.');
-    }
+    // Keyless Firebase sign-in via Identity Toolkit signInWithIdp (requires zero service account private key)
+    const idpPostBody = tokenData.id_token
+      ? `id_token=${encodeURIComponent(tokenData.id_token)}&providerId=google.com`
+      : `access_token=${encodeURIComponent(tokenData.access_token)}&providerId=google.com`;
 
-    const email = String(googleProfile.email).toLowerCase();
-    const displayName = sanitizeText(googleProfile.name || email.split('@')[0] || 'Event Planner', 120);
-
-    let userRecord;
-    try {
-      userRecord = await adminAuth.getUserByEmail(email);
-      if (displayName && !userRecord.displayName) {
-        userRecord = await adminAuth.updateUser(userRecord.uid, { displayName });
-      }
-    } catch (lookupErr) {
-      if (lookupErr?.code === 'auth/user-not-found') {
-        userRecord = await adminAuth.createUser({
-          email,
-          displayName,
-          emailVerified: Boolean(googleProfile.email_verified),
-          ...(googleProfile.picture ? { photoURL: googleProfile.picture } : {})
-        });
-      } else {
-        throw lookupErr;
-      }
-    }
-
-    const profile = await ensureUserProfile({
-      uid: userRecord.uid,
-      email: userRecord.email || email,
-      displayName: userRecord.displayName || displayName
-    });
-
-    // Mint custom token on Firebase project avenora-ai and exchange via backend Identity Toolkit REST
-    const customToken = await adminAuth.createCustomToken(userRecord.uid, {
-      provider: 'google.com',
-      projectId: FIREBASE_PROJECT_ID
-    });
-    const session = await callIdentityToolkit('accounts:signInWithCustomToken', {
-      token: customToken,
+    const session = await callIdentityToolkit('accounts:signInWithIdp', {
+      postBody: idpPostBody,
+      requestUri: targetOrigin,
+      returnIdpCredential: true,
       returnSecureToken: true
     });
+
+    const uid = session.localId;
+    const email = String(session.email || '').toLowerCase();
+    const displayName = sanitizeText(session.displayName || session.fullName || email.split('@')[0] || 'Event Planner', 120);
+
+    const profile = await ensureUserProfile(
+      {
+        uid,
+        email,
+        displayName
+      },
+      session.idToken
+    );
 
     const jti = crypto.randomBytes(16).toString('hex');
     const ticket = sealPayload({
@@ -422,10 +442,10 @@ export async function googleAuthCallback(req, res) {
         refreshToken: session.refreshToken,
         expiresIn: Number(session.expiresIn) || 3600,
         user: {
-          uid: userRecord.uid,
-          email: userRecord.email || email,
-          displayName: userRecord.displayName || displayName,
-          emailVerified: Boolean(userRecord.emailVerified || googleProfile.email_verified)
+          uid,
+          email,
+          displayName: displayName || profile.displayName,
+          emailVerified: Boolean(session.emailVerified)
         },
         profile
       }
@@ -470,16 +490,22 @@ export async function googleAuthComplete(req, res, next) {
 
 export async function getMe(req, res, next) {
   try {
-    const profile = await ensureUserProfile({
-      uid: req.user.uid,
-      email: req.user.email,
-      displayName: req.user.displayName
-    });
+    const profile = await ensureUserProfile(
+      {
+        uid: req.user.uid,
+        email: req.user.email,
+        displayName: req.user.displayName
+      },
+      req.idToken
+    );
+
     let userRecord = null;
-    try {
-      userRecord = await adminAuth.getUser(req.user.uid);
-    } catch {
-      userRecord = null;
+    if (hasAdminCredentials()) {
+      try {
+        userRecord = await adminAuth.getUser(req.user.uid);
+      } catch {
+        userRecord = null;
+      }
     }
 
     return res.json({

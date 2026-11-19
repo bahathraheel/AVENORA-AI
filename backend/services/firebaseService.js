@@ -1,5 +1,18 @@
 import { FieldValue } from 'firebase-admin/firestore';
-import { adminDb, assertFirebaseAdminReady } from '../config/firebaseAdmin.js';
+import { adminDb, assertFirebaseAdminReady, hasAdminCredentials } from '../config/firebaseAdmin.js';
+import { getCurrentUserToken } from '../utils/authContext.js';
+import {
+  buildCreateWrite,
+  buildDeleteWrite,
+  buildUpdateWrite,
+  commitWritesRest,
+  createDocRest,
+  deleteDocRest,
+  generateFirestoreDocId,
+  getDocRest,
+  listCollectionRest,
+  updateDocRest
+} from './firestoreRestClient.js';
 import {
   clampInt,
   sanitizeEnum,
@@ -26,6 +39,16 @@ function formatDoc(docSnap) {
   return serializeFirestoreValue({ id: docSnap.id, ...docSnap.data() });
 }
 
+function resolveRestToken(explicitToken) {
+  const token = explicitToken || getCurrentUserToken();
+  if (!token) {
+    const err = new Error('Authentication required to access Firebase Firestore.');
+    err.statusCode = 401;
+    throw err;
+  }
+  return token;
+}
+
 function userDocRef(uid) {
   assertFirebaseAdminReady();
   return adminDb.collection('users').doc(uid);
@@ -42,22 +65,40 @@ function eventDocRef(uid, eventId) {
   return userDocRef(uid).collection('events').doc(safeEventId);
 }
 
-async function assertEventOwnership(uid, eventId) {
-  const ref = eventDocRef(uid, eventId);
-  const snap = await ref.get();
-  if (!snap.exists || snap.data()?.ownerId !== uid) {
+async function assertEventOwnership(uid, eventId, explicitToken = '') {
+  const safeEventId = sanitizeId(eventId);
+  if (!safeEventId) {
+    const err = new Error('Invalid event identifier.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (hasAdminCredentials()) {
+    const ref = eventDocRef(uid, safeEventId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data()?.ownerId !== uid) {
+      const err = new Error('Event workspace not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+    return { ref, snap, data: formatDoc(snap), safeEventId };
+  }
+
+  const token = resolveRestToken(explicitToken);
+  const data = await getDocRest(`users/${uid}/events/${safeEventId}`, token);
+  if (!data || data.ownerId !== uid) {
     const err = new Error('Event workspace not found.');
     err.statusCode = 404;
     throw err;
   }
-  return { ref, snap, data: formatDoc(snap) };
+  return { ref: null, snap: null, data, safeEventId, token };
 }
 
 // ---------------------------------------------------------------------------
 // User Profile Operations (users/{uid})
 // ---------------------------------------------------------------------------
 
-export async function ensureUserProfile(userInfo) {
+export async function ensureUserProfile(userInfo, explicitToken = '') {
   const uid = sanitizeId(userInfo?.uid);
   if (!uid) {
     const err = new Error('Invalid user ID.');
@@ -65,17 +106,11 @@ export async function ensureUserProfile(userInfo) {
     throw err;
   }
 
-  const ref = userDocRef(uid);
-  const snap = await ref.get();
-  if (snap.exists) {
-    return serializeFirestoreValue(snap.data());
-  }
-
   const email = sanitizeText(userInfo.email || '', 180);
   const fallbackName = email ? email.split('@')[0] : 'Event Planner';
   const displayName = sanitizeText(userInfo.displayName || fallbackName || 'Event Planner', 120) || 'Event Planner';
 
-  const profileData = {
+  const baseProfile = {
     uid,
     displayName,
     email,
@@ -83,26 +118,35 @@ export async function ensureUserProfile(userInfo) {
     notificationsEnabled: true,
     deadlineReminders: true,
     aiDigestEnabled: true,
-    roleNote: '',
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp()
+    roleNote: ''
   };
 
-  await ref.set(profileData);
-  const createdSnap = await ref.get();
-  return serializeFirestoreValue(createdSnap.data());
-}
-
-export async function updateUserProfile(uid, payload = {}) {
-  const ref = userDocRef(uid);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    await ensureUserProfile({ uid, email: payload.email || '', displayName: payload.displayName || '' });
+  if (hasAdminCredentials()) {
+    const ref = userDocRef(uid);
+    const snap = await ref.get();
+    if (snap.exists) {
+      return serializeFirestoreValue(snap.data());
+    }
+    await ref.set({
+      ...baseProfile,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    const createdSnap = await ref.get();
+    return serializeFirestoreValue(createdSnap.data());
   }
 
-  const updates = {
-    updatedAt: FieldValue.serverTimestamp()
-  };
+  const token = resolveRestToken(explicitToken);
+  const existing = await getDocRest(`users/${uid}`, token);
+  if (existing) {
+    return existing;
+  }
+
+  return createDocRest('users', uid, baseProfile, ['createdAt', 'updatedAt'], token);
+}
+
+export async function updateUserProfile(uid, payload = {}, explicitToken = '') {
+  const updates = {};
   if (typeof payload.displayName === 'string' && payload.displayName.trim()) {
     updates.displayName = sanitizeText(payload.displayName, 120);
   }
@@ -122,28 +166,48 @@ export async function updateUserProfile(uid, payload = {}) {
     updates.aiDigestEnabled = payload.aiDigestEnabled;
   }
 
-  await ref.update(updates);
-  const fresh = await ref.get();
-  return serializeFirestoreValue(fresh.data());
+  if (hasAdminCredentials()) {
+    const ref = userDocRef(uid);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      await ensureUserProfile({ uid, email: payload.email || '', displayName: payload.displayName || '' });
+    }
+    await ref.update({ ...updates, updatedAt: FieldValue.serverTimestamp() });
+    const fresh = await ref.get();
+    return serializeFirestoreValue(fresh.data());
+  }
+
+  const token = resolveRestToken(explicitToken);
+  const existing = await getDocRest(`users/${uid}`, token);
+  if (!existing) {
+    await ensureUserProfile({ uid, email: payload.email || '', displayName: payload.displayName || '' }, token);
+  }
+  return updateDocRest(`users/${uid}`, updates, ['updatedAt'], token);
 }
 
 // ---------------------------------------------------------------------------
 // Events Operations (users/{uid}/events/{eventId})
 // ---------------------------------------------------------------------------
 
-export async function listEvents(uid) {
-  const snap = await userDocRef(uid).collection('events').where('ownerId', '==', uid).get();
-  return snap.docs
-    .map(formatDoc)
-    .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+export async function listEvents(uid, explicitToken = '') {
+  if (hasAdminCredentials()) {
+    const snap = await userDocRef(uid).collection('events').where('ownerId', '==', uid).get();
+    return snap.docs
+      .map(formatDoc)
+      .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+  }
+
+  const token = resolveRestToken(explicitToken);
+  const rows = await listCollectionRest(`users/${uid}`, 'events', uid, token);
+  return rows.sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
 }
 
-export async function getEvent(uid, eventId) {
-  const { data } = await assertEventOwnership(uid, eventId);
+export async function getEvent(uid, eventId, explicitToken = '') {
+  const { data } = await assertEventOwnership(uid, eventId, explicitToken);
   return data;
 }
 
-export async function createEvent(uid, payload = {}) {
+export async function createEvent(uid, payload = {}, explicitToken = '') {
   const name = sanitizeText(payload.name || '', 160);
   const date = sanitizeIsoDate(payload.date || '');
   const location = sanitizeText(payload.location || '', 200);
@@ -165,23 +229,30 @@ export async function createEvent(uid, payload = {}) {
     style: sanitizeText(payload.style || 'Modern', 64) || 'Modern',
     preferences: sanitizeText(payload.preferences || '', 1500),
     specialRequirements: sanitizeText(payload.specialRequirements || '', 1500),
-    status: 'planning',
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp()
+    status: 'planning'
   };
 
   if (payload.blueprint && typeof payload.blueprint === 'object') {
     docData.blueprint = payload.blueprint;
   }
 
-  const ref = await userDocRef(uid).collection('events').add(docData);
-  const created = await ref.get();
-  return formatDoc(created);
+  if (hasAdminCredentials()) {
+    const ref = await userDocRef(uid).collection('events').add({
+      ...docData,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    const created = await ref.get();
+    return formatDoc(created);
+  }
+
+  const token = resolveRestToken(explicitToken);
+  return createDocRest(`users/${uid}/events`, generateFirestoreDocId(), docData, ['createdAt', 'updatedAt'], token);
 }
 
-export async function updateEvent(uid, eventId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const updates = { updatedAt: FieldValue.serverTimestamp() };
+export async function updateEvent(uid, eventId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  const updates = {};
 
   if (typeof payload.name === 'string' && payload.name.trim()) {
     updates.name = sanitizeText(payload.name, 160);
@@ -217,53 +288,82 @@ export async function updateEvent(uid, eventId, payload = {}) {
     updates.status = sanitizeEnum(payload.status, EVENT_STATUSES, 'planning');
   }
 
-  await ref.update(updates);
-  const fresh = await ref.get();
-  return formatDoc(fresh);
+  if (hasAdminCredentials()) {
+    await ref.update({ ...updates, updatedAt: FieldValue.serverTimestamp() });
+    const fresh = await ref.get();
+    return formatDoc(fresh);
+  }
+
+  return updateDocRest(`users/${uid}/events/${safeEventId}`, updates, ['updatedAt'], token);
 }
 
-export async function updateEventBlueprint(uid, eventId, blueprint) {
+export async function updateEventBlueprint(uid, eventId, blueprint, explicitToken = '') {
   if (!blueprint || typeof blueprint !== 'object' || Array.isArray(blueprint)) {
     const err = new Error('Blueprint payload must be an object.');
     err.statusCode = 400;
     throw err;
   }
-  const { ref } = await assertEventOwnership(uid, eventId);
-  await ref.update({
-    blueprint,
-    updatedAt: FieldValue.serverTimestamp()
-  });
-  const fresh = await ref.get();
-  return formatDoc(fresh);
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+
+  if (hasAdminCredentials()) {
+    await ref.update({
+      blueprint,
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    const fresh = await ref.get();
+    return formatDoc(fresh);
+  }
+
+  return updateDocRest(`users/${uid}/events/${safeEventId}`, { blueprint }, ['updatedAt'], token);
 }
 
-export async function deleteEvent(uid, eventId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function deleteEvent(uid, eventId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const subcollections = ['tasks', 'expenses', 'guests', 'vendors', 'timeline', 'chats', 'themes'];
+
+  if (hasAdminCredentials()) {
+    for (const sub of subcollections) {
+      const snap = await ref.collection(sub).get();
+      if (!snap.empty) {
+        const batch = adminDb.batch();
+        snap.docs.forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+      }
+    }
+    await ref.delete();
+    return { deleted: true, id: safeEventId };
+  }
+
+  const writes = [];
   for (const sub of subcollections) {
-    const snap = await ref.collection(sub).get();
-    if (!snap.empty) {
-      const batch = adminDb.batch();
-      snap.docs.forEach((d) => batch.delete(d.ref));
-      await batch.commit();
+    const docs = await listCollectionRest(`users/${uid}/events/${safeEventId}`, sub, uid, token);
+    for (const doc of docs) {
+      writes.push(buildDeleteWrite(`users/${uid}/events/${safeEventId}/${sub}/${doc.id}`));
     }
   }
-  await ref.delete();
-  return { deleted: true, id: eventId };
+  writes.push(buildDeleteWrite(`users/${uid}/events/${safeEventId}`));
+
+  for (let i = 0; i < writes.length; i += 400) {
+    await commitWritesRest(writes.slice(i, i + 400), token);
+  }
+  return { deleted: true, id: safeEventId };
 }
 
 // ---------------------------------------------------------------------------
 // Expenses Operations (users/{uid}/events/{eventId}/expenses/{expenseId})
 // ---------------------------------------------------------------------------
 
-export async function listExpenses(uid, eventId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const snap = await ref.collection('expenses').where('ownerId', '==', uid).get();
-  return snap.docs.map(formatDoc);
+export async function listExpenses(uid, eventId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  if (hasAdminCredentials()) {
+    const snap = await ref.collection('expenses').where('ownerId', '==', uid).get();
+    return snap.docs.map(formatDoc);
+  }
+  return listCollectionRest(`users/${uid}/events/${safeEventId}`, 'expenses', uid, token);
 }
 
-export async function createExpense(uid, eventId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function createExpense(uid, eventId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const title = sanitizeText(payload.title || '', 180);
   if (!title) {
     const err = new Error('Expense title is required.');
@@ -272,7 +372,7 @@ export async function createExpense(uid, eventId, payload = {}) {
   }
   const docData = {
     ownerId: uid,
-    eventId,
+    eventId: safeEventId,
     title,
     category: sanitizeText(payload.category || 'Miscellaneous', 64) || 'Miscellaneous',
     vendorId: sanitizeText(payload.vendorId || '', 128),
@@ -281,54 +381,107 @@ export async function createExpense(uid, eventId, payload = {}) {
     actualCost: sanitizePositiveNumber(payload.actualCost, 0),
     paymentStatus: sanitizeEnum(payload.paymentStatus || 'unpaid', EXPENSE_PAYMENT_STATUSES, 'unpaid'),
     expenseDate: sanitizeIsoDate(payload.expenseDate || ''),
-    notes: sanitizeText(payload.notes || '', 800),
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp()
+    notes: sanitizeText(payload.notes || '', 800)
   };
 
-  const docRef = await ref.collection('expenses').add(docData);
-  return formatDoc(await docRef.get());
+  if (hasAdminCredentials()) {
+    const docRef = await ref.collection('expenses').add({
+      ...docData,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    return formatDoc(await docRef.get());
+  }
+
+  return createDocRest(`users/${uid}/events/${safeEventId}/expenses`, generateFirestoreDocId(), docData, ['createdAt', 'updatedAt'], token);
 }
 
-export async function updateExpense(uid, eventId, expenseId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function updateExpense(uid, eventId, expenseId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const safeId = sanitizeId(expenseId);
-  const docRef = ref.collection('expenses').doc(safeId);
-  const existing = await docRef.get();
-  if (!existing.exists || existing.data()?.ownerId !== uid) {
+  if (!safeId) {
+    const err = new Error('Invalid expense identifier.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (hasAdminCredentials()) {
+    const docRef = ref.collection('expenses').doc(safeId);
+    const existing = await docRef.get();
+    if (!existing.exists || existing.data()?.ownerId !== uid) {
+      const err = new Error('Expense item not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const updates = {
+      title: sanitizeText(payload.title ?? existing.data().title, 180) || existing.data().title,
+      category: sanitizeText(payload.category ?? existing.data().category, 64) || existing.data().category,
+      vendorId: sanitizeText(payload.vendorId ?? existing.data().vendorId ?? '', 128),
+      vendorName: sanitizeText(payload.vendorName ?? existing.data().vendorName ?? '', 160),
+      estimatedCost: sanitizePositiveNumber(payload.estimatedCost ?? existing.data().estimatedCost, 0),
+      actualCost: sanitizePositiveNumber(payload.actualCost ?? existing.data().actualCost, 0),
+      paymentStatus: sanitizeEnum(payload.paymentStatus ?? existing.data().paymentStatus, EXPENSE_PAYMENT_STATUSES, 'unpaid'),
+      expenseDate: sanitizeIsoDate(payload.expenseDate ?? existing.data().expenseDate ?? ''),
+      notes: sanitizeText(payload.notes ?? existing.data().notes ?? '', 800),
+      updatedAt: FieldValue.serverTimestamp()
+    };
+
+    await docRef.update(updates);
+    return formatDoc(await docRef.get());
+  }
+
+  const docPath = `users/${uid}/events/${safeEventId}/expenses/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
     const err = new Error('Expense item not found.');
     err.statusCode = 404;
     throw err;
   }
 
   const updates = {
-    title: sanitizeText(payload.title ?? existing.data().title, 180) || existing.data().title,
-    category: sanitizeText(payload.category ?? existing.data().category, 64) || existing.data().category,
-    vendorId: sanitizeText(payload.vendorId ?? existing.data().vendorId ?? '', 128),
-    vendorName: sanitizeText(payload.vendorName ?? existing.data().vendorName ?? '', 160),
-    estimatedCost: sanitizePositiveNumber(payload.estimatedCost ?? existing.data().estimatedCost, 0),
-    actualCost: sanitizePositiveNumber(payload.actualCost ?? existing.data().actualCost, 0),
-    paymentStatus: sanitizeEnum(payload.paymentStatus ?? existing.data().paymentStatus, EXPENSE_PAYMENT_STATUSES, 'unpaid'),
-    expenseDate: sanitizeIsoDate(payload.expenseDate ?? existing.data().expenseDate ?? ''),
-    notes: sanitizeText(payload.notes ?? existing.data().notes ?? '', 800),
-    updatedAt: FieldValue.serverTimestamp()
+    title: sanitizeText(payload.title ?? existing.title, 180) || existing.title,
+    category: sanitizeText(payload.category ?? existing.category, 64) || existing.category,
+    vendorId: sanitizeText(payload.vendorId ?? existing.vendorId ?? '', 128),
+    vendorName: sanitizeText(payload.vendorName ?? existing.vendorName ?? '', 160),
+    estimatedCost: sanitizePositiveNumber(payload.estimatedCost ?? existing.estimatedCost, 0),
+    actualCost: sanitizePositiveNumber(payload.actualCost ?? existing.actualCost, 0),
+    paymentStatus: sanitizeEnum(payload.paymentStatus ?? existing.paymentStatus, EXPENSE_PAYMENT_STATUSES, 'unpaid'),
+    expenseDate: sanitizeIsoDate(payload.expenseDate ?? existing.expenseDate ?? ''),
+    notes: sanitizeText(payload.notes ?? existing.notes ?? '', 800)
   };
-
-  await docRef.update(updates);
-  return formatDoc(await docRef.get());
+  return updateDocRest(docPath, updates, ['updatedAt'], token);
 }
 
-export async function deleteExpense(uid, eventId, expenseId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function deleteExpense(uid, eventId, expenseId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const safeId = sanitizeId(expenseId);
-  const docRef = ref.collection('expenses').doc(safeId);
-  const snap = await docRef.get();
-  if (!snap.exists || snap.data()?.ownerId !== uid) {
+  if (!safeId) {
+    const err = new Error('Invalid expense identifier.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (hasAdminCredentials()) {
+    const docRef = ref.collection('expenses').doc(safeId);
+    const snap = await docRef.get();
+    if (!snap.exists || snap.data()?.ownerId !== uid) {
+      const err = new Error('Expense item not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+    await docRef.delete();
+    return { deleted: true, id: safeId };
+  }
+
+  const docPath = `users/${uid}/events/${safeEventId}/expenses/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
     const err = new Error('Expense item not found.');
     err.statusCode = 404;
     throw err;
   }
-  await docRef.delete();
+  await deleteDocRest(docPath, token);
   return { deleted: true, id: safeId };
 }
 
@@ -336,16 +489,20 @@ export async function deleteExpense(uid, eventId, expenseId) {
 // Tasks Operations (users/{uid}/events/{eventId}/tasks/{taskId})
 // ---------------------------------------------------------------------------
 
-export async function listTasks(uid, eventId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const snap = await ref.collection('tasks').where('ownerId', '==', uid).get();
-  return snap.docs
-    .map(formatDoc)
-    .sort((a, b) => String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999')));
+export async function listTasks(uid, eventId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  if (hasAdminCredentials()) {
+    const snap = await ref.collection('tasks').where('ownerId', '==', uid).get();
+    return snap.docs
+      .map(formatDoc)
+      .sort((a, b) => String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999')));
+  }
+  const rows = await listCollectionRest(`users/${uid}/events/${safeEventId}`, 'tasks', uid, token);
+  return rows.sort((a, b) => String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999')));
 }
 
-export async function createTask(uid, eventId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function createTask(uid, eventId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const title = sanitizeText(payload.title || '', 200);
   if (!title) {
     const err = new Error('Task title is required.');
@@ -354,63 +511,100 @@ export async function createTask(uid, eventId, payload = {}) {
   }
   const docData = {
     ownerId: uid,
-    eventId,
+    eventId: safeEventId,
     title,
     description: sanitizeText(payload.description || '', 1000),
     priority: sanitizeEnum(payload.priority || 'medium', TASK_PRIORITIES, 'medium'),
     dueDate: sanitizeIsoDate(payload.dueDate || ''),
     category: sanitizeText(payload.category || 'General', 64) || 'General',
     status: sanitizeEnum(payload.status || 'pending', TASK_STATUSES, 'pending'),
-    aiGenerated: Boolean(payload.aiGenerated),
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp()
+    aiGenerated: Boolean(payload.aiGenerated)
   };
-  const docRef = await ref.collection('tasks').add(docData);
-  return formatDoc(await docRef.get());
-}
 
-export async function createTasksBulk(uid, eventId, tasksList = []) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  if (!Array.isArray(tasksList) || tasksList.length === 0) return [];
-  const batch = adminDb.batch();
-  const createdRefs = [];
-
-  for (const raw of tasksList.slice(0, 20)) {
-    const title = sanitizeText(raw?.title || '', 200);
-    if (!title) continue;
-    const docRef = ref.collection('tasks').doc();
-    createdRefs.push(docRef);
-    batch.set(docRef, {
-      ownerId: uid,
-      eventId,
-      title,
-      description: sanitizeText(raw?.description || '', 1000),
-      priority: sanitizeEnum(raw?.priority || 'medium', TASK_PRIORITIES, 'medium'),
-      dueDate: sanitizeIsoDate(raw?.dueDate || ''),
-      category: sanitizeText(raw?.category || 'General', 64) || 'General',
-      status: 'pending',
-      aiGenerated: Boolean(raw?.aiGenerated ?? true),
+  if (hasAdminCredentials()) {
+    const docRef = await ref.collection('tasks').add({
+      ...docData,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp()
     });
+    return formatDoc(await docRef.get());
   }
-  await batch.commit();
-  const snaps = await Promise.all(createdRefs.map((r) => r.get()));
-  return snaps.map(formatDoc);
+
+  return createDocRest(`users/${uid}/events/${safeEventId}/tasks`, generateFirestoreDocId(), docData, ['createdAt', 'updatedAt'], token);
 }
 
-export async function updateTask(uid, eventId, taskId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function createTasksBulk(uid, eventId, tasksList = [], explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  if (!Array.isArray(tasksList) || tasksList.length === 0) return [];
+
+  if (hasAdminCredentials()) {
+    const batch = adminDb.batch();
+    const createdRefs = [];
+
+    for (const raw of tasksList.slice(0, 20)) {
+      const title = sanitizeText(raw?.title || '', 200);
+      if (!title) continue;
+      const docRef = ref.collection('tasks').doc();
+      createdRefs.push(docRef);
+      batch.set(docRef, {
+        ownerId: uid,
+        eventId: safeEventId,
+        title,
+        description: sanitizeText(raw?.description || '', 1000),
+        priority: sanitizeEnum(raw?.priority || 'medium', TASK_PRIORITIES, 'medium'),
+        dueDate: sanitizeIsoDate(raw?.dueDate || ''),
+        category: sanitizeText(raw?.category || 'General', 64) || 'General',
+        status: 'pending',
+        aiGenerated: Boolean(raw?.aiGenerated ?? true),
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp()
+      });
+    }
+    await batch.commit();
+    const snaps = await Promise.all(createdRefs.map((r) => r.get()));
+    return snaps.map(formatDoc);
+  }
+
+  const writes = [];
+  const docIds = [];
+  for (const raw of tasksList.slice(0, 20)) {
+    const title = sanitizeText(raw?.title || '', 200);
+    if (!title) continue;
+    const id = generateFirestoreDocId();
+    docIds.push(id);
+    writes.push(
+      buildCreateWrite(
+        `users/${uid}/events/${safeEventId}/tasks/${id}`,
+        {
+          ownerId: uid,
+          eventId: safeEventId,
+          title,
+          description: sanitizeText(raw?.description || '', 1000),
+          priority: sanitizeEnum(raw?.priority || 'medium', TASK_PRIORITIES, 'medium'),
+          dueDate: sanitizeIsoDate(raw?.dueDate || ''),
+          category: sanitizeText(raw?.category || 'General', 64) || 'General',
+          status: 'pending',
+          aiGenerated: Boolean(raw?.aiGenerated ?? true)
+        },
+        ['createdAt', 'updatedAt']
+      )
+    );
+  }
+  await commitWritesRest(writes, token);
+  const all = await listTasks(uid, safeEventId, token);
+  return all.filter((t) => docIds.includes(t.id));
+}
+
+export async function updateTask(uid, eventId, taskId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const safeId = sanitizeId(taskId);
-  const docRef = ref.collection('tasks').doc(safeId);
-  const existing = await docRef.get();
-  if (!existing.exists || existing.data()?.ownerId !== uid) {
-    const err = new Error('Task not found.');
-    err.statusCode = 404;
+  if (!safeId) {
+    const err = new Error('Invalid task identifier.');
+    err.statusCode = 400;
     throw err;
   }
 
-  const updates = { updatedAt: FieldValue.serverTimestamp() };
+  const updates = {};
   if (typeof payload.title === 'string' && payload.title.trim()) {
     updates.title = sanitizeText(payload.title, 200);
   }
@@ -430,21 +624,57 @@ export async function updateTask(uid, eventId, taskId, payload = {}) {
     updates.status = sanitizeEnum(payload.status, TASK_STATUSES, 'pending');
   }
 
-  await docRef.update(updates);
-  return formatDoc(await docRef.get());
-}
+  if (hasAdminCredentials()) {
+    const docRef = ref.collection('tasks').doc(safeId);
+    const existing = await docRef.get();
+    if (!existing.exists || existing.data()?.ownerId !== uid) {
+      const err = new Error('Task not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+    await docRef.update({ ...updates, updatedAt: FieldValue.serverTimestamp() });
+    return formatDoc(await docRef.get());
+  }
 
-export async function deleteTask(uid, eventId, taskId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const safeId = sanitizeId(taskId);
-  const docRef = ref.collection('tasks').doc(safeId);
-  const snap = await docRef.get();
-  if (!snap.exists || snap.data()?.ownerId !== uid) {
+  const docPath = `users/${uid}/events/${safeEventId}/tasks/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
     const err = new Error('Task not found.');
     err.statusCode = 404;
     throw err;
   }
-  await docRef.delete();
+  return updateDocRest(docPath, updates, ['updatedAt'], token);
+}
+
+export async function deleteTask(uid, eventId, taskId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  const safeId = sanitizeId(taskId);
+  if (!safeId) {
+    const err = new Error('Invalid task identifier.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (hasAdminCredentials()) {
+    const docRef = ref.collection('tasks').doc(safeId);
+    const snap = await docRef.get();
+    if (!snap.exists || snap.data()?.ownerId !== uid) {
+      const err = new Error('Task not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+    await docRef.delete();
+    return { deleted: true, id: safeId };
+  }
+
+  const docPath = `users/${uid}/events/${safeEventId}/tasks/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
+    const err = new Error('Task not found.');
+    err.statusCode = 404;
+    throw err;
+  }
+  await deleteDocRest(docPath, token);
   return { deleted: true, id: safeId };
 }
 
@@ -452,14 +682,17 @@ export async function deleteTask(uid, eventId, taskId) {
 // Guests Operations (users/{uid}/events/{eventId}/guests/{guestId})
 // ---------------------------------------------------------------------------
 
-export async function listGuests(uid, eventId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const snap = await ref.collection('guests').where('ownerId', '==', uid).get();
-  return snap.docs.map(formatDoc);
+export async function listGuests(uid, eventId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  if (hasAdminCredentials()) {
+    const snap = await ref.collection('guests').where('ownerId', '==', uid).get();
+    return snap.docs.map(formatDoc);
+  }
+  return listCollectionRest(`users/${uid}/events/${safeEventId}`, 'guests', uid, token);
 }
 
-export async function createGuest(uid, eventId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function createGuest(uid, eventId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const name = sanitizeText(payload.name || '', 160);
   if (!name) {
     const err = new Error('Guest name is required.');
@@ -468,7 +701,7 @@ export async function createGuest(uid, eventId, payload = {}) {
   }
   const docData = {
     ownerId: uid,
-    eventId,
+    eventId: safeEventId,
     name,
     email: sanitizeText(payload.email || '', 180),
     phone: sanitizeText(payload.phone || '', 40),
@@ -477,27 +710,31 @@ export async function createGuest(uid, eventId, payload = {}) {
     invitationStatus: sanitizeEnum(payload.invitationStatus || 'not_sent', GUEST_INVITATION_STATUSES, 'not_sent'),
     attendanceStatus: sanitizeEnum(payload.attendanceStatus || 'not_checked_in', GUEST_ATTENDANCE_STATUSES, 'not_checked_in'),
     dietaryNotes: sanitizeText(payload.dietaryNotes || '', 300),
-    notes: sanitizeText(payload.notes || '', 600),
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp()
+    notes: sanitizeText(payload.notes || '', 600)
   };
 
-  const docRef = await ref.collection('guests').add(docData);
-  return formatDoc(await docRef.get());
+  if (hasAdminCredentials()) {
+    const docRef = await ref.collection('guests').add({
+      ...docData,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    return formatDoc(await docRef.get());
+  }
+
+  return createDocRest(`users/${uid}/events/${safeEventId}/guests`, generateFirestoreDocId(), docData, ['createdAt', 'updatedAt'], token);
 }
 
-export async function updateGuest(uid, eventId, guestId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function updateGuest(uid, eventId, guestId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const safeId = sanitizeId(guestId);
-  const docRef = ref.collection('guests').doc(safeId);
-  const existing = await docRef.get();
-  if (!existing.exists || existing.data()?.ownerId !== uid) {
-    const err = new Error('Guest not found.');
-    err.statusCode = 404;
+  if (!safeId) {
+    const err = new Error('Invalid guest identifier.');
+    err.statusCode = 400;
     throw err;
   }
 
-  const updates = { updatedAt: FieldValue.serverTimestamp() };
+  const updates = {};
   if (typeof payload.name === 'string' && payload.name.trim()) {
     updates.name = sanitizeText(payload.name, 160);
   }
@@ -526,21 +763,57 @@ export async function updateGuest(uid, eventId, guestId, payload = {}) {
     updates.notes = sanitizeText(payload.notes, 600);
   }
 
-  await docRef.update(updates);
-  return formatDoc(await docRef.get());
-}
+  if (hasAdminCredentials()) {
+    const docRef = ref.collection('guests').doc(safeId);
+    const existing = await docRef.get();
+    if (!existing.exists || existing.data()?.ownerId !== uid) {
+      const err = new Error('Guest not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+    await docRef.update({ ...updates, updatedAt: FieldValue.serverTimestamp() });
+    return formatDoc(await docRef.get());
+  }
 
-export async function deleteGuest(uid, eventId, guestId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const safeId = sanitizeId(guestId);
-  const docRef = ref.collection('guests').doc(safeId);
-  const snap = await docRef.get();
-  if (!snap.exists || snap.data()?.ownerId !== uid) {
+  const docPath = `users/${uid}/events/${safeEventId}/guests/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
     const err = new Error('Guest not found.');
     err.statusCode = 404;
     throw err;
   }
-  await docRef.delete();
+  return updateDocRest(docPath, updates, ['updatedAt'], token);
+}
+
+export async function deleteGuest(uid, eventId, guestId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  const safeId = sanitizeId(guestId);
+  if (!safeId) {
+    const err = new Error('Invalid guest identifier.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (hasAdminCredentials()) {
+    const docRef = ref.collection('guests').doc(safeId);
+    const snap = await docRef.get();
+    if (!snap.exists || snap.data()?.ownerId !== uid) {
+      const err = new Error('Guest not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+    await docRef.delete();
+    return { deleted: true, id: safeId };
+  }
+
+  const docPath = `users/${uid}/events/${safeEventId}/guests/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
+    const err = new Error('Guest not found.');
+    err.statusCode = 404;
+    throw err;
+  }
+  await deleteDocRest(docPath, token);
   return { deleted: true, id: safeId };
 }
 
@@ -548,14 +821,17 @@ export async function deleteGuest(uid, eventId, guestId) {
 // Vendors Operations (users/{uid}/events/{eventId}/vendors/{vendorId})
 // ---------------------------------------------------------------------------
 
-export async function listVendors(uid, eventId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const snap = await ref.collection('vendors').where('ownerId', '==', uid).get();
-  return snap.docs.map(formatDoc);
+export async function listVendors(uid, eventId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  if (hasAdminCredentials()) {
+    const snap = await ref.collection('vendors').where('ownerId', '==', uid).get();
+    return snap.docs.map(formatDoc);
+  }
+  return listCollectionRest(`users/${uid}/events/${safeEventId}`, 'vendors', uid, token);
 }
 
-export async function createVendor(uid, eventId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function createVendor(uid, eventId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const name = sanitizeText(payload.name || '', 160);
   if (!name) {
     const err = new Error('Vendor name is required.');
@@ -564,7 +840,7 @@ export async function createVendor(uid, eventId, payload = {}) {
   }
   const docData = {
     ownerId: uid,
-    eventId,
+    eventId: safeEventId,
     name,
     category: sanitizeText(payload.category || 'Venue', 64) || 'Venue',
     status: sanitizeEnum(payload.status || 'shortlisted', VENDOR_STATUSES, 'shortlisted'),
@@ -573,54 +849,107 @@ export async function createVendor(uid, eventId, payload = {}) {
     actualCost: sanitizePositiveNumber(payload.actualCost, 0),
     paymentStatus: sanitizeEnum(payload.paymentStatus || 'unpaid', VENDOR_PAYMENT_STATUSES, 'unpaid'),
     bookingDate: sanitizeIsoDate(payload.bookingDate || ''),
-    notes: sanitizeText(payload.notes || '', 800),
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp()
+    notes: sanitizeText(payload.notes || '', 800)
   };
 
-  const docRef = await ref.collection('vendors').add(docData);
-  return formatDoc(await docRef.get());
+  if (hasAdminCredentials()) {
+    const docRef = await ref.collection('vendors').add({
+      ...docData,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    return formatDoc(await docRef.get());
+  }
+
+  return createDocRest(`users/${uid}/events/${safeEventId}/vendors`, generateFirestoreDocId(), docData, ['createdAt', 'updatedAt'], token);
 }
 
-export async function updateVendor(uid, eventId, vendorId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function updateVendor(uid, eventId, vendorId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const safeId = sanitizeId(vendorId);
-  const docRef = ref.collection('vendors').doc(safeId);
-  const existing = await docRef.get();
-  if (!existing.exists || existing.data()?.ownerId !== uid) {
+  if (!safeId) {
+    const err = new Error('Invalid vendor identifier.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (hasAdminCredentials()) {
+    const docRef = ref.collection('vendors').doc(safeId);
+    const existing = await docRef.get();
+    if (!existing.exists || existing.data()?.ownerId !== uid) {
+      const err = new Error('Vendor not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const updates = {
+      name: sanitizeText(payload.name ?? existing.data().name, 160) || existing.data().name,
+      category: sanitizeText(payload.category ?? existing.data().category, 64) || existing.data().category,
+      status: sanitizeEnum(payload.status ?? existing.data().status, VENDOR_STATUSES, 'shortlisted'),
+      contactInfo: sanitizeText(payload.contactInfo ?? existing.data().contactInfo ?? '', 300),
+      estimatedCost: sanitizePositiveNumber(payload.estimatedCost ?? existing.data().estimatedCost, 0),
+      actualCost: sanitizePositiveNumber(payload.actualCost ?? existing.data().actualCost, 0),
+      paymentStatus: sanitizeEnum(payload.paymentStatus ?? existing.data().paymentStatus, VENDOR_PAYMENT_STATUSES, 'unpaid'),
+      bookingDate: sanitizeIsoDate(payload.bookingDate ?? existing.data().bookingDate ?? ''),
+      notes: sanitizeText(payload.notes ?? existing.data().notes ?? '', 800),
+      updatedAt: FieldValue.serverTimestamp()
+    };
+
+    await docRef.update(updates);
+    return formatDoc(await docRef.get());
+  }
+
+  const docPath = `users/${uid}/events/${safeEventId}/vendors/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
     const err = new Error('Vendor not found.');
     err.statusCode = 404;
     throw err;
   }
 
   const updates = {
-    name: sanitizeText(payload.name ?? existing.data().name, 160) || existing.data().name,
-    category: sanitizeText(payload.category ?? existing.data().category, 64) || existing.data().category,
-    status: sanitizeEnum(payload.status ?? existing.data().status, VENDOR_STATUSES, 'shortlisted'),
-    contactInfo: sanitizeText(payload.contactInfo ?? existing.data().contactInfo ?? '', 300),
-    estimatedCost: sanitizePositiveNumber(payload.estimatedCost ?? existing.data().estimatedCost, 0),
-    actualCost: sanitizePositiveNumber(payload.actualCost ?? existing.data().actualCost, 0),
-    paymentStatus: sanitizeEnum(payload.paymentStatus ?? existing.data().paymentStatus, VENDOR_PAYMENT_STATUSES, 'unpaid'),
-    bookingDate: sanitizeIsoDate(payload.bookingDate ?? existing.data().bookingDate ?? ''),
-    notes: sanitizeText(payload.notes ?? existing.data().notes ?? '', 800),
-    updatedAt: FieldValue.serverTimestamp()
+    name: sanitizeText(payload.name ?? existing.name, 160) || existing.name,
+    category: sanitizeText(payload.category ?? existing.category, 64) || existing.category,
+    status: sanitizeEnum(payload.status ?? existing.status, VENDOR_STATUSES, 'shortlisted'),
+    contactInfo: sanitizeText(payload.contactInfo ?? existing.contactInfo ?? '', 300),
+    estimatedCost: sanitizePositiveNumber(payload.estimatedCost ?? existing.estimatedCost, 0),
+    actualCost: sanitizePositiveNumber(payload.actualCost ?? existing.actualCost, 0),
+    paymentStatus: sanitizeEnum(payload.paymentStatus ?? existing.paymentStatus, VENDOR_PAYMENT_STATUSES, 'unpaid'),
+    bookingDate: sanitizeIsoDate(payload.bookingDate ?? existing.bookingDate ?? ''),
+    notes: sanitizeText(payload.notes ?? existing.notes ?? '', 800)
   };
-
-  await docRef.update(updates);
-  return formatDoc(await docRef.get());
+  return updateDocRest(docPath, updates, ['updatedAt'], token);
 }
 
-export async function deleteVendor(uid, eventId, vendorId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function deleteVendor(uid, eventId, vendorId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const safeId = sanitizeId(vendorId);
-  const docRef = ref.collection('vendors').doc(safeId);
-  const snap = await docRef.get();
-  if (!snap.exists || snap.data()?.ownerId !== uid) {
+  if (!safeId) {
+    const err = new Error('Invalid vendor identifier.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (hasAdminCredentials()) {
+    const docRef = ref.collection('vendors').doc(safeId);
+    const snap = await docRef.get();
+    if (!snap.exists || snap.data()?.ownerId !== uid) {
+      const err = new Error('Vendor not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+    await docRef.delete();
+    return { deleted: true, id: safeId };
+  }
+
+  const docPath = `users/${uid}/events/${safeEventId}/vendors/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
     const err = new Error('Vendor not found.');
     err.statusCode = 404;
     throw err;
   }
-  await docRef.delete();
+  await deleteDocRest(docPath, token);
   return { deleted: true, id: safeId };
 }
 
@@ -628,16 +957,20 @@ export async function deleteVendor(uid, eventId, vendorId) {
 // Timeline Operations (users/{uid}/events/{eventId}/timeline/{timelineId})
 // ---------------------------------------------------------------------------
 
-export async function listTimeline(uid, eventId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const snap = await ref.collection('timeline').where('ownerId', '==', uid).get();
-  return snap.docs
-    .map(formatDoc)
-    .sort((a, b) => (Number(a.orderIndex) || 0) - (Number(b.orderIndex) || 0));
+export async function listTimeline(uid, eventId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  if (hasAdminCredentials()) {
+    const snap = await ref.collection('timeline').where('ownerId', '==', uid).get();
+    return snap.docs
+      .map(formatDoc)
+      .sort((a, b) => (Number(a.orderIndex) || 0) - (Number(b.orderIndex) || 0));
+  }
+  const rows = await listCollectionRest(`users/${uid}/events/${safeEventId}`, 'timeline', uid, token);
+  return rows.sort((a, b) => (Number(a.orderIndex) || 0) - (Number(b.orderIndex) || 0));
 }
 
-export async function createTimelineItem(uid, eventId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function createTimelineItem(uid, eventId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const timeSlot = sanitizeText(payload.timeSlot || '', 32);
   const title = sanitizeText(payload.title || '', 200);
   if (!timeSlot || !title) {
@@ -648,64 +981,101 @@ export async function createTimelineItem(uid, eventId, payload = {}) {
 
   const docData = {
     ownerId: uid,
-    eventId,
+    eventId: safeEventId,
     timeSlot,
     endTime: sanitizeText(payload.endTime || '', 32),
     title,
     description: sanitizeText(payload.description || '', 800),
     orderIndex: clampInt(payload.orderIndex, 0, 1000, 0),
-    completed: Boolean(payload.completed),
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp()
+    completed: Boolean(payload.completed)
   };
 
-  const docRef = await ref.collection('timeline').add(docData);
-  return formatDoc(await docRef.get());
+  if (hasAdminCredentials()) {
+    const docRef = await ref.collection('timeline').add({
+      ...docData,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    return formatDoc(await docRef.get());
+  }
+
+  return createDocRest(`users/${uid}/events/${safeEventId}/timeline`, generateFirestoreDocId(), docData, ['createdAt', 'updatedAt'], token);
 }
 
-export async function createTimelineBulk(uid, eventId, itemsList = [], baseIndex = 0) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function createTimelineBulk(uid, eventId, itemsList = [], baseIndex = 0, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   if (!Array.isArray(itemsList) || itemsList.length === 0) return [];
-  const batch = adminDb.batch();
-  const createdRefs = [];
 
+  if (hasAdminCredentials()) {
+    const batch = adminDb.batch();
+    const createdRefs = [];
+
+    itemsList.slice(0, 25).forEach((raw, idx) => {
+      const timeSlot = sanitizeText(raw?.timeSlot || '', 32);
+      const title = sanitizeText(raw?.title || '', 200);
+      if (!timeSlot || !title) return;
+      const docRef = ref.collection('timeline').doc();
+      createdRefs.push(docRef);
+      batch.set(docRef, {
+        ownerId: uid,
+        eventId: safeEventId,
+        timeSlot,
+        endTime: sanitizeText(raw?.endTime || '', 32),
+        title,
+        description: sanitizeText(raw?.description || '', 800),
+        orderIndex: clampInt(baseIndex + idx, 0, 1000, idx),
+        completed: false,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp()
+      });
+    });
+
+    await batch.commit();
+    const snaps = await Promise.all(createdRefs.map((r) => r.get()));
+    return snaps.map(formatDoc);
+  }
+
+  const writes = [];
+  const docIds = [];
   itemsList.slice(0, 25).forEach((raw, idx) => {
     const timeSlot = sanitizeText(raw?.timeSlot || '', 32);
     const title = sanitizeText(raw?.title || '', 200);
     if (!timeSlot || !title) return;
-    const docRef = ref.collection('timeline').doc();
-    createdRefs.push(docRef);
-    batch.set(docRef, {
-      ownerId: uid,
-      eventId,
-      timeSlot,
-      endTime: sanitizeText(raw?.endTime || '', 32),
-      title,
-      description: sanitizeText(raw?.description || '', 800),
-      orderIndex: clampInt(baseIndex + idx, 0, 1000, idx),
-      completed: false,
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp()
-    });
+    const id = generateFirestoreDocId();
+    docIds.push(id);
+    writes.push(
+      buildCreateWrite(
+        `users/${uid}/events/${safeEventId}/timeline/${id}`,
+        {
+          ownerId: uid,
+          eventId: safeEventId,
+          timeSlot,
+          endTime: sanitizeText(raw?.endTime || '', 32),
+          title,
+          description: sanitizeText(raw?.description || '', 800),
+          orderIndex: clampInt(baseIndex + idx, 0, 1000, idx),
+          completed: false
+        },
+        ['createdAt', 'updatedAt']
+      )
+    );
   });
 
-  await batch.commit();
-  const snaps = await Promise.all(createdRefs.map((r) => r.get()));
-  return snaps.map(formatDoc);
+  await commitWritesRest(writes, token);
+  const all = await listTimeline(uid, safeEventId, token);
+  return all.filter((item) => docIds.includes(item.id));
 }
 
-export async function updateTimelineItem(uid, eventId, timelineId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function updateTimelineItem(uid, eventId, timelineId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const safeId = sanitizeId(timelineId);
-  const docRef = ref.collection('timeline').doc(safeId);
-  const existing = await docRef.get();
-  if (!existing.exists || existing.data()?.ownerId !== uid) {
-    const err = new Error('Timeline activity not found.');
-    err.statusCode = 404;
+  if (!safeId) {
+    const err = new Error('Invalid timeline item identifier.');
+    err.statusCode = 400;
     throw err;
   }
 
-  const updates = { updatedAt: FieldValue.serverTimestamp() };
+  const updates = {};
   if (typeof payload.timeSlot === 'string' && payload.timeSlot.trim()) {
     updates.timeSlot = sanitizeText(payload.timeSlot, 32);
   }
@@ -718,48 +1088,106 @@ export async function updateTimelineItem(uid, eventId, timelineId, payload = {})
   if (typeof payload.description === 'string') {
     updates.description = sanitizeText(payload.description, 800);
   }
-  if (payload.orderIndex !== undefined) {
-    updates.orderIndex = clampInt(payload.orderIndex, 0, 1000, existing.data().orderIndex || 0);
-  }
   if (typeof payload.completed === 'boolean') {
     updates.completed = payload.completed;
   }
 
-  await docRef.update(updates);
-  return formatDoc(await docRef.get());
-}
-
-export async function reorderTimelineItems(uid, eventId, pairs = []) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  if (!Array.isArray(pairs) || pairs.length === 0) return [];
-  const batch = adminDb.batch();
-
-  for (const item of pairs.slice(0, 100)) {
-    const safeId = sanitizeId(item?.id);
-    if (!safeId) continue;
+  if (hasAdminCredentials()) {
     const docRef = ref.collection('timeline').doc(safeId);
-    const snap = await docRef.get();
-    if (!snap.exists || snap.data()?.ownerId !== uid) continue;
-    batch.update(docRef, {
-      orderIndex: clampInt(item.orderIndex, 0, 1000, 0),
-      updatedAt: FieldValue.serverTimestamp()
-    });
+    const existing = await docRef.get();
+    if (!existing.exists || existing.data()?.ownerId !== uid) {
+      const err = new Error('Timeline activity not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+    if (payload.orderIndex !== undefined) {
+      updates.orderIndex = clampInt(payload.orderIndex, 0, 1000, existing.data().orderIndex || 0);
+    }
+    await docRef.update({ ...updates, updatedAt: FieldValue.serverTimestamp() });
+    return formatDoc(await docRef.get());
   }
-  await batch.commit();
-  return listTimeline(uid, eventId);
-}
 
-export async function deleteTimelineItem(uid, eventId, timelineId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const safeId = sanitizeId(timelineId);
-  const docRef = ref.collection('timeline').doc(safeId);
-  const snap = await docRef.get();
-  if (!snap.exists || snap.data()?.ownerId !== uid) {
+  const docPath = `users/${uid}/events/${safeEventId}/timeline/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
     const err = new Error('Timeline activity not found.');
     err.statusCode = 404;
     throw err;
   }
-  await docRef.delete();
+  if (payload.orderIndex !== undefined) {
+    updates.orderIndex = clampInt(payload.orderIndex, 0, 1000, existing.orderIndex || 0);
+  }
+  return updateDocRest(docPath, updates, ['updatedAt'], token);
+}
+
+export async function reorderTimelineItems(uid, eventId, pairs = [], explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  if (!Array.isArray(pairs) || pairs.length === 0) return [];
+
+  if (hasAdminCredentials()) {
+    const batch = adminDb.batch();
+    for (const item of pairs.slice(0, 100)) {
+      const safeId = sanitizeId(item?.id);
+      if (!safeId) continue;
+      const docRef = ref.collection('timeline').doc(safeId);
+      const snap = await docRef.get();
+      if (!snap.exists || snap.data()?.ownerId !== uid) continue;
+      batch.update(docRef, {
+        orderIndex: clampInt(item.orderIndex, 0, 1000, 0),
+        updatedAt: FieldValue.serverTimestamp()
+      });
+    }
+    await batch.commit();
+    return listTimeline(uid, safeEventId);
+  }
+
+  const existingList = await listTimeline(uid, safeEventId, token);
+  const ownedIds = new Set(existingList.map((i) => i.id));
+  const writes = [];
+  for (const item of pairs.slice(0, 100)) {
+    const safeId = sanitizeId(item?.id);
+    if (!safeId || !ownedIds.has(safeId)) continue;
+    writes.push(
+      buildUpdateWrite(
+        `users/${uid}/events/${safeEventId}/timeline/${safeId}`,
+        { orderIndex: clampInt(item.orderIndex, 0, 1000, 0) },
+        ['updatedAt']
+      )
+    );
+  }
+  await commitWritesRest(writes, token);
+  return listTimeline(uid, safeEventId, token);
+}
+
+export async function deleteTimelineItem(uid, eventId, timelineId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  const safeId = sanitizeId(timelineId);
+  if (!safeId) {
+    const err = new Error('Invalid timeline item identifier.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (hasAdminCredentials()) {
+    const docRef = ref.collection('timeline').doc(safeId);
+    const snap = await docRef.get();
+    if (!snap.exists || snap.data()?.ownerId !== uid) {
+      const err = new Error('Timeline activity not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+    await docRef.delete();
+    return { deleted: true, id: safeId };
+  }
+
+  const docPath = `users/${uid}/events/${safeEventId}/timeline/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
+    const err = new Error('Timeline activity not found.');
+    err.statusCode = 404;
+    throw err;
+  }
+  await deleteDocRest(docPath, token);
   return { deleted: true, id: safeId };
 }
 
@@ -767,14 +1195,17 @@ export async function deleteTimelineItem(uid, eventId, timelineId) {
 // Themes Operations (users/{uid}/events/{eventId}/themes/{themeId})
 // ---------------------------------------------------------------------------
 
-export async function listThemes(uid, eventId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const snap = await ref.collection('themes').where('ownerId', '==', uid).get();
-  return snap.docs.map(formatDoc);
+export async function listThemes(uid, eventId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  if (hasAdminCredentials()) {
+    const snap = await ref.collection('themes').where('ownerId', '==', uid).get();
+    return snap.docs.map(formatDoc);
+  }
+  return listCollectionRest(`users/${uid}/events/${safeEventId}`, 'themes', uid, token);
 }
 
-export async function createTheme(uid, eventId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function createTheme(uid, eventId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const safePalette = (Array.isArray(payload.palette) && payload.palette.length > 0
     ? payload.palette
     : ['#14251C', '#A3B59A', '#F5F3ED']
@@ -784,7 +1215,7 @@ export async function createTheme(uid, eventId, payload = {}) {
 
   const docData = {
     ownerId: uid,
-    eventId,
+    eventId: safeEventId,
     name: sanitizeText(payload.name || 'Custom Event Theme', 160) || 'Custom Event Theme',
     description: sanitizeText(payload.description || 'Custom event theme concept.', 1500) || 'Custom event theme concept.',
     palette: safePalette,
@@ -797,26 +1228,50 @@ export async function createTheme(uid, eventId, payload = {}) {
     invitationConcept: sanitizeText(payload.invitationConcept || '', 800),
     materials: sanitizeText(payload.materials || '', 800),
     budgetAlternatives: sanitizeText(payload.budgetAlternatives || '', 1000),
-    moodboardSpecs: payload.moodboardSpecs && typeof payload.moodboardSpecs === 'object' ? payload.moodboardSpecs : {},
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp()
+    moodboardSpecs: payload.moodboardSpecs && typeof payload.moodboardSpecs === 'object' ? payload.moodboardSpecs : {}
   };
 
-  const docRef = await ref.collection('themes').add(docData);
-  return formatDoc(await docRef.get());
+  if (hasAdminCredentials()) {
+    const docRef = await ref.collection('themes').add({
+      ...docData,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    });
+    return formatDoc(await docRef.get());
+  }
+
+  return createDocRest(`users/${uid}/events/${safeEventId}/themes`, generateFirestoreDocId(), docData, ['createdAt', 'updatedAt'], token);
 }
 
-export async function deleteTheme(uid, eventId, themeId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function deleteTheme(uid, eventId, themeId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const safeId = sanitizeId(themeId);
-  const docRef = ref.collection('themes').doc(safeId);
-  const snap = await docRef.get();
-  if (!snap.exists || snap.data()?.ownerId !== uid) {
+  if (!safeId) {
+    const err = new Error('Invalid theme identifier.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (hasAdminCredentials()) {
+    const docRef = ref.collection('themes').doc(safeId);
+    const snap = await docRef.get();
+    if (!snap.exists || snap.data()?.ownerId !== uid) {
+      const err = new Error('Saved theme not found.');
+      err.statusCode = 404;
+      throw err;
+    }
+    await docRef.delete();
+    return { deleted: true, id: safeId };
+  }
+
+  const docPath = `users/${uid}/events/${safeEventId}/themes/${safeId}`;
+  const existing = await getDocRest(docPath, token);
+  if (!existing || existing.ownerId !== uid) {
     const err = new Error('Saved theme not found.');
     err.statusCode = 404;
     throw err;
   }
-  await docRef.delete();
+  await deleteDocRest(docPath, token);
   return { deleted: true, id: safeId };
 }
 
@@ -824,21 +1279,25 @@ export async function deleteTheme(uid, eventId, themeId) {
 // Chats Operations (users/{uid}/events/{eventId}/chats/{chatId})
 // ---------------------------------------------------------------------------
 
-export async function listChats(uid, eventId) {
-  const { ref } = await assertEventOwnership(uid, eventId);
-  const snap = await ref.collection('chats').where('ownerId', '==', uid).get();
-  return snap.docs
-    .map(formatDoc)
-    .sort((a, b) => {
-      const sa = a.createdAt?.seconds ?? 0;
-      const sb = b.createdAt?.seconds ?? 0;
-      if (sa !== sb) return sa - sb;
-      return (a.createdAt?.nanoseconds ?? 0) - (b.createdAt?.nanoseconds ?? 0);
-    });
+export async function listChats(uid, eventId, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
+  let rows;
+  if (hasAdminCredentials()) {
+    const snap = await ref.collection('chats').where('ownerId', '==', uid).get();
+    rows = snap.docs.map(formatDoc);
+  } else {
+    rows = await listCollectionRest(`users/${uid}/events/${safeEventId}`, 'chats', uid, token);
+  }
+  return rows.sort((a, b) => {
+    const sa = a.createdAt?.seconds ?? 0;
+    const sb = b.createdAt?.seconds ?? 0;
+    if (sa !== sb) return sa - sb;
+    return (a.createdAt?.nanoseconds ?? 0) - (b.createdAt?.nanoseconds ?? 0);
+  });
 }
 
-export async function createChatTurn(uid, eventId, payload = {}) {
-  const { ref } = await assertEventOwnership(uid, eventId);
+export async function createChatTurn(uid, eventId, payload = {}, explicitToken = '') {
+  const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
   const content = sanitizeText(payload.content || '', 12000);
   const conversationId = sanitizeId(payload.conversationId || '');
   if (!content || !conversationId) {
@@ -849,37 +1308,47 @@ export async function createChatTurn(uid, eventId, payload = {}) {
 
   const docData = {
     ownerId: uid,
-    eventId,
+    eventId: safeEventId,
     role: payload.role === 'assistant' ? 'assistant' : 'user',
     content,
-    conversationId,
-    createdAt: FieldValue.serverTimestamp()
+    conversationId
   };
 
-  const docRef = await ref.collection('chats').add(docData);
-  return formatDoc(await docRef.get());
+  if (hasAdminCredentials()) {
+    const docRef = await ref.collection('chats').add({
+      ...docData,
+      createdAt: FieldValue.serverTimestamp()
+    });
+    return formatDoc(await docRef.get());
+  }
+
+  return createDocRest(`users/${uid}/events/${safeEventId}/chats`, generateFirestoreDocId(), docData, ['createdAt'], token);
 }
 
 // ---------------------------------------------------------------------------
 // Workspace Aggregations & Export
 // ---------------------------------------------------------------------------
 
-export async function getEventWorkspaceSnapshot(uid, eventId) {
-  const event = await getEvent(uid, eventId);
+export async function getEventWorkspaceSnapshot(uid, eventId, explicitToken = '') {
+  const event = await getEvent(uid, eventId, explicitToken);
   const [tasks, expenses, guests, vendors, timeline, themes] = await Promise.all([
-    listTasks(uid, eventId),
-    listExpenses(uid, eventId),
-    listGuests(uid, eventId),
-    listVendors(uid, eventId),
-    listTimeline(uid, eventId),
-    listThemes(uid, eventId)
+    listTasks(uid, eventId, explicitToken),
+    listExpenses(uid, eventId, explicitToken),
+    listGuests(uid, eventId, explicitToken),
+    listVendors(uid, eventId, explicitToken),
+    listTimeline(uid, eventId, explicitToken),
+    listThemes(uid, eventId, explicitToken)
   ]);
 
   return { event, tasks, expenses, guests, vendors, timeline, themes };
 }
 
-export async function buildEventContext(uid, eventId) {
-  const { event, tasks, expenses, guests, vendors, timeline, themes } = await getEventWorkspaceSnapshot(uid, eventId);
+export async function buildEventContext(uid, eventId, explicitToken = '') {
+  const { event, tasks, expenses, guests, vendors, timeline, themes } = await getEventWorkspaceSnapshot(
+    uid,
+    eventId,
+    explicitToken
+  );
   const activeTheme = themes[0] || null;
 
   const totalBudget = Number(event.budget) || 0;
@@ -925,14 +1394,19 @@ export async function buildEventContext(uid, eventId) {
   };
 }
 
-export async function exportAllUserData(uid) {
-  const profileSnap = await userDocRef(uid).get();
-  const profile = profileSnap.exists ? serializeFirestoreValue(profileSnap.data()) : null;
-  const events = await listEvents(uid);
+export async function exportAllUserData(uid, explicitToken = '') {
+  const profile = hasAdminCredentials()
+    ? await (async () => {
+        const snap = await userDocRef(uid).get();
+        return snap.exists ? serializeFirestoreValue(snap.data()) : null;
+      })()
+    : await getDocRest(`users/${uid}`, resolveRestToken(explicitToken));
+
+  const events = await listEvents(uid, explicitToken);
   const detailedEvents = await Promise.all(
     events.map(async (ev) => {
-      const snapshot = await getEventWorkspaceSnapshot(uid, ev.id);
-      const chats = await listChats(uid, ev.id);
+      const snapshot = await getEventWorkspaceSnapshot(uid, ev.id, explicitToken);
+      const chats = await listChats(uid, ev.id, explicitToken);
       return { ...snapshot, chats };
     })
   );

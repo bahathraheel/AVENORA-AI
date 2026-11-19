@@ -53,14 +53,21 @@ app.get('/', (_req, res) => {
   });
 });
 
-// Public health & service check
+// Public health check endpoint
+app.get('/health', (_req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'AVENORA AI backend is running',
+    environment: isProd ? 'production' : 'development'
+  });
+});
+
 app.get('/api/health', (_req, res) => {
-  res.json({
-    ok: true,
-    service: 'avenora-ai-backend',
-    mode: isProd ? 'production' : 'development',
-    firebase: getFirebaseHealth(),
-    geminiConfigured: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY')
+  res.status(200).json({
+    success: true,
+    message: 'AVENORA AI backend is running',
+    environment: isProd ? 'production' : 'development',
+    firebase: getFirebaseHealth()
   });
 });
 

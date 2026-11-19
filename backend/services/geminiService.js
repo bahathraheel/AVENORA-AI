@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 const MODEL_NAME = 'gemini-4-hydrogen';
 
@@ -185,7 +185,7 @@ export async function generateEventBlueprint(event, sectionKey = null) {
     }
 
     const prompt = `You are AVENORA AI, an expert senior event architect.
-Regenerate ONLY the "${sectionKey}" section for this event, making it deeply personalized, realistic, practical, and aligned with the budget (${event.budget} ${event.currency}) and guest count (${event.guestCount}).
+Regenerate ONLY the "${sectionKey}" section for this event. Keep every point concise, specific, realistic, and aligned with the budget (${event.budget} ${event.currency}) and guest count (${event.guestCount}).
 Never invent fake real-world vendor names or phone numbers. Label any cost figures as planning estimates.
 
 Event Details:
@@ -198,7 +198,8 @@ Return valid JSON matching the requested schema for "${sectionKey}".`;
         model: MODEL_NAME,
         contents: prompt,
         config: {
-          systemInstruction: 'Return strictly valid JSON with only the single regenerated section key.',
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          systemInstruction: 'Return strictly valid, concise JSON with only the single regenerated section key.',
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -219,8 +220,11 @@ Return valid JSON matching the requested schema for "${sectionKey}".`;
   }
 
   const prompt = `You are AVENORA AI, a world-class event planning architect.
-Generate a complete, bespoke, actionable 16-section Event Blueprint tailored specifically to the user's event details below.
-Avoid generic fluff. Respect the exact budget (${event.budget} ${event.currency}) so that budgetAllocation percentages sum to 100 and estimatedAmount values sum accurately to ${event.budget}.
+Generate a complete, bespoke, actionable 16-section Event Blueprint tailored to the event details below.
+Be crisp and high-impact (avoid filler):
+- overview and concept: 2 concise sentences each.
+- list arrays (themeRecommendations, venueRequirements, decorationIdeas, cateringSuggestions, guestExperienceIdeas, contingencySuggestions, personalizedRecommendations, nextSteps): 3 specific bullets each.
+- schedule: 5–6 timed slots; budgetAllocation: 5–6 categories summing to 100% and ${event.budget}; priorityChecklist: 5–6 tasks; vendorCategories: 4–5 items; planningTimeline: 4 phases; riskManagement: 3–4 items.
 Never fabricate real vendor names, phone numbers, or guaranteed real-time quotes; mark monetary allocations clearly as planning estimates.
 
 Event Details:
@@ -231,7 +235,8 @@ ${summary}`;
       model: MODEL_NAME,
       contents: prompt,
       config: {
-        systemInstruction: 'You produce structured, practical, high-craft event planning blueprints in JSON matching the exact schema.',
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        systemInstruction: 'Produce a crisp, structured, practical 16-section event planning blueprint in JSON matching the exact schema without verbose filler.',
         responseMimeType: 'application/json',
         responseSchema: BLUEPRINT_SCHEMA
       }
@@ -305,7 +310,8 @@ User: ${userMessage}`;
       model: MODEL_NAME,
       contents: prompt,
       config: {
-        systemInstruction: 'You are AVENORA AI Co-Pilot, a calm, hyper-organized, warm luxury event strategist. Always use the provided event context directly without asking the user to repeat information already saved. Give clear, structured, actionable recommendations tailored to their exact guest count, date, location, budget, and preferences. Never invent fake real-world vendor phone numbers or live vendor prices.'
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        systemInstruction: 'You are AVENORA AI Co-Pilot, a calm, hyper-organized luxury event strategist. Use the provided event context directly without asking the user to repeat saved details. Give crisp, structured, actionable recommendations tailored to their exact guest count, date, location, budget, and preferences. Never invent fake real-world vendor phone numbers or live prices.'
       }
     })
   );
@@ -339,7 +345,8 @@ ${(budgetData.categoryBreakdown || []).map((c) => `- ${c.category}: Estimated ${
       model: MODEL_NAME,
       contents: prompt,
       config: {
-        systemInstruction: 'Provide structured, realistic budget optimization guidance grounded strictly in the provided figures.',
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        systemInstruction: 'Provide crisp, structured, realistic budget optimization guidance grounded strictly in the provided figures (3-4 concise points per array).',
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -392,6 +399,7 @@ ${formatEventSummary(event)}`;
       model: MODEL_NAME,
       contents: prompt,
       config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -451,6 +459,8 @@ Creative Direction / Request: ${direction || event.style || 'Earthy Luxury Edito
       model: MODEL_NAME,
       contents: prompt,
       config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        systemInstruction: 'Keep field descriptions crisp (1–2 impactful sentences per category) so the concept loads rapidly.',
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -552,6 +562,7 @@ ${formatEventSummary(event)}`;
       model: MODEL_NAME,
       contents: prompt,
       config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -589,6 +600,7 @@ ${formatEventSummary(event)}`;
       model: MODEL_NAME,
       contents: prompt,
       config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -625,6 +637,7 @@ ${formatEventSummary(event)}`;
       model: MODEL_NAME,
       contents: prompt,
       config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,

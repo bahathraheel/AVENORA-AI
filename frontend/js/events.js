@@ -1,3 +1,4 @@
+import { buildApiUrl } from '../config/apiConfig.js';
 import { apiRequest, callAiEndpoint } from './api.js';
 import {
   copyToClipboard,
@@ -252,6 +253,9 @@ function renderNineStepWizard(root, profile) {
   const draft = getInitialDraft(profile?.preferredCurrency || 'USD');
   const saveDraft = () => localStorage.setItem(WIZARD_DRAFT_KEY, JSON.stringify(draft));
 
+  // Warm up backend instance silently before final step generation
+  fetch(buildApiUrl('/health')).catch(() => {});
+
   const stepTitles = [
     'Step 1 · Choose Event Type',
     'Step 2 · Name Your Event',
@@ -466,8 +470,19 @@ function renderNineStepWizard(root, profile) {
       setButtonLoading(nextBtn, true, 'Generating AI Blueprint...');
       body.insertAdjacentHTML(
         'beforeend',
-        `<div class="ai-loading-box" style="margin-top:16px;"><div class="ai-spinner ai-spinner-lg"></div><div class="ai-loading-copy"><span class="ai-loading-title">AVENORA AI is architecting your 16-section blueprint...</span><span class="ai-loading-sub">Tailoring schedule, budget splits, vendor plan, and contingencies.</span></div></div>`
+        `<div class="ai-loading-box" style="margin-top:16px;"><div class="ai-spinner ai-spinner-lg"></div><div class="ai-loading-copy"><span class="ai-loading-title">AVENORA AI is architecting your 16-section blueprint...</span><span id="blueprint-elapsed-sub" class="ai-loading-sub">Tailoring schedule, budget splits, vendor plan, and contingencies (0s).</span></div></div>`
       );
+
+      const startedAt = Date.now();
+      const elapsedTimer = setInterval(() => {
+        const sub = document.getElementById('blueprint-elapsed-sub');
+        if (!sub) return;
+        const sec = Math.floor((Date.now() - startedAt) / 1000);
+        sub.textContent =
+          sec >= 12
+            ? `Waking AI service and finalizing all 16 sections (${sec}s)...`
+            : `Tailoring schedule, budget splits, vendor plan, and contingencies (${sec}s).`;
+      }, 1000);
 
       let blueprint = null;
       try {
@@ -475,6 +490,8 @@ function renderNineStepWizard(root, profile) {
         blueprint = aiRes.blueprint;
       } catch (aiErr) {
         showToast(`Event saved without AI blueprint: ${aiErr.message}`, 'error');
+      } finally {
+        clearInterval(elapsedTimer);
       }
 
       try {

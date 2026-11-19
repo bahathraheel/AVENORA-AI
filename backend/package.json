@@ -9,8 +9,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "@google/genai": "^3.6.0",

@@ -112,20 +112,13 @@ cp backend/.env.example backend/.env
 ```
 Fill in `GEMINI_API_KEY`, `FIREBASE_PROJECT_ID=avenora-ai`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_WEB_API_KEY`, and (for Google Sign-In) `GOOGLE_CLIENT_ID` & `GOOGLE_CLIENT_SECRET`.
 
-### 2. Run Locally (Unified Preview or Split Servers)
+### 2. Run Backend & Frontend Independently
 
-**Option A — Unified Local Preview (Port 3000):**
 ```bash
-npm install
-npm run dev
-```
+# Terminal 1: Pure Node.js + Express REST API Backend (http://localhost:5000)
+cd backend && npm install && npm start
 
-**Option B — Split Two-Server Dev (Matches Production):**
-```bash
-# Terminal 1: Backend API on http://localhost:5000
-cd backend && npm install && npm run dev
-
-# Terminal 2: Frontend dev server on http://localhost:5173
+# Terminal 2: Static Frontend Dev Server (http://localhost:5173)
 cd frontend && npm install
 VITE_API_BASE_URL=http://localhost:5000 npm run dev
 ```

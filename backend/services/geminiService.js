@@ -1,6 +1,7 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 const MODEL_NAME = 'gemini-4-hydrogen';
+const FALLBACK_MODEL_NAME = 'gemini-3.1-flash-lite';
 
 function getGeminiClient() {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -19,23 +20,85 @@ function getGeminiClient() {
   });
 }
 
-async function withRetry(fn, retries = 2) {
-  let lastErr;
-  for (let attempt = 0; attempt <= retries; attempt++) {
+function normalizeGeminiError(err) {
+  const rawMsg = String(err?.message || '');
+  let parsed = null;
+  if (rawMsg.trim().startsWith('{')) {
     try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      const status = err?.status || err?.statusCode || 500;
-      if (attempt < retries && (status === 429 || status >= 500)) {
-        const delay = 500 * Math.pow(2, attempt);
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
-      }
-      throw err;
+      parsed = JSON.parse(rawMsg);
+    } catch {
+      parsed = null;
     }
   }
-  throw lastErr;
+
+  const nestedErr = parsed?.error || parsed || {};
+  const status = Number(nestedErr.code || err?.status || err?.statusCode) || 500;
+  const apiStatus = String(nestedErr.status || err?.code || '').toUpperCase();
+  const detailMsg = String(nestedErr.message || rawMsg || 'AI generation failed.');
+
+  if (status === 429 || apiStatus === 'RESOURCE_EXHAUSTED' || detailMsg.includes('quota')) {
+    const retryMatch = detailMsg.match(/retry in\s+([0-9hms.]+)/i);
+    const retryHint = retryMatch ? ` Retry window: ${retryMatch[1]}.` : '';
+    const friendly = new Error(
+      `Gemini API free-tier quota exceeded for your backend GEMINI_API_KEY.${retryHint} Enable billing on your Google AI Studio project or update GEMINI_API_KEY on Render to continue generating.`
+    );
+    friendly.statusCode = 429;
+    friendly.code = 'RESOURCE_EXHAUSTED';
+    return friendly;
+  }
+
+  if (status === 400 || status === 403 || apiStatus === 'PERMISSION_DENIED' || detailMsg.includes('API_KEY_INVALID')) {
+    const friendly = new Error(
+      'Gemini API key was rejected (invalid or unauthorized). Check GEMINI_API_KEY in your backend environment variables.'
+    );
+    friendly.statusCode = status === 403 ? 403 : 400;
+    friendly.code = apiStatus || 'GEMINI_AUTH_ERROR';
+    return friendly;
+  }
+
+  const friendly = new Error(detailMsg.length > 260 ? `${detailMsg.slice(0, 257)}...` : detailMsg);
+  friendly.statusCode = status >= 400 && status < 600 ? status : 502;
+  return friendly;
+}
+
+function isQuotaError(err) {
+  const status = Number(err?.status || err?.statusCode || 0);
+  const msg = String(err?.message || '');
+  return status === 429 || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota');
+}
+
+async function runGeminiCall(ai, paramsBuilder) {
+  const tryModel = async (modelName, thinkingLevel) => {
+    const params = paramsBuilder(modelName, thinkingLevel);
+    let lastErr;
+    for (let attempt = 0; attempt <= 1; attempt++) {
+      try {
+        return await ai.models.generateContent(params);
+      } catch (err) {
+        lastErr = err;
+        const status = Number(err?.status || err?.statusCode || 500);
+        if (attempt === 0 && status >= 500) {
+          await new Promise((r) => setTimeout(r, 400));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
+  };
+
+  try {
+    return await tryModel(MODEL_NAME, ThinkingLevel.LOW);
+  } catch (primaryErr) {
+    if (isQuotaError(primaryErr)) {
+      try {
+        return await tryModel(FALLBACK_MODEL_NAME, ThinkingLevel.MINIMAL);
+      } catch (fallbackErr) {
+        throw normalizeGeminiError(fallbackErr);
+      }
+    }
+    throw normalizeGeminiError(primaryErr);
+  }
 }
 
 function parseJsonSafe(rawText, fallback) {
@@ -193,24 +256,22 @@ ${summary}
 
 Return valid JSON matching the requested schema for "${sectionKey}".`;
 
-    const response = await withRetry(() =>
-      ai.models.generateContent({
-        model: MODEL_NAME,
-        contents: prompt,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          systemInstruction: 'Return strictly valid, concise JSON with only the single regenerated section key.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              [sectionKey]: BLUEPRINT_SCHEMA.properties[sectionKey]
-            },
-            required: [sectionKey]
-          }
+    const response = await runGeminiCall(ai, (model, thinkingLevel) => ({
+      model,
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingLevel },
+        systemInstruction: 'Return strictly valid, concise JSON with only the single regenerated section key.',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            [sectionKey]: BLUEPRINT_SCHEMA.properties[sectionKey]
+          },
+          required: [sectionKey]
         }
-      })
-    );
+      }
+    }));
 
     const parsed = parseJsonSafe(response.text, null);
     if (!parsed || !(sectionKey in parsed)) {
@@ -230,18 +291,16 @@ Never fabricate real vendor names, phone numbers, or guaranteed real-time quotes
 Event Details:
 ${summary}`;
 
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        systemInstruction: 'Produce a crisp, structured, practical 16-section event planning blueprint in JSON matching the exact schema without verbose filler.',
-        responseMimeType: 'application/json',
-        responseSchema: BLUEPRINT_SCHEMA
-      }
-    })
-  );
+  const response = await runGeminiCall(ai, (model, thinkingLevel) => ({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel },
+      systemInstruction: 'Produce a crisp, structured, practical 16-section event planning blueprint in JSON matching the exact schema without verbose filler.',
+      responseMimeType: 'application/json',
+      responseSchema: BLUEPRINT_SCHEMA
+    }
+  }));
 
   const blueprint = parseJsonSafe(response.text, null);
   if (!blueprint || !blueprint.overview) {
@@ -305,16 +364,14 @@ ${recentTurns || 'New conversation'}
 
 User: ${userMessage}`;
 
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        systemInstruction: 'You are AVENORA AI Co-Pilot, a calm, hyper-organized luxury event strategist. Use the provided event context directly without asking the user to repeat saved details. Give crisp, structured, actionable recommendations tailored to their exact guest count, date, location, budget, and preferences. Never invent fake real-world vendor phone numbers or live prices.'
-      }
-    })
-  );
+  const response = await runGeminiCall(ai, (model, thinkingLevel) => ({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel },
+      systemInstruction: 'You are AVENORA AI Co-Pilot, a calm, hyper-organized luxury event strategist. Use the provided event context directly without asking the user to repeat saved details. Give crisp, structured, actionable recommendations tailored to their exact guest count, date, location, budget, and preferences. Never invent fake real-world vendor phone numbers or live prices.'
+    }
+  }));
 
   return {
     reply: response.text || 'I could not formulate a response right now. Please try again.'
@@ -340,34 +397,32 @@ Calculated Financial Totals:
 Category Breakdown:
 ${(budgetData.categoryBreakdown || []).map((c) => `- ${c.category}: Estimated ${c.estimated}, Actual ${c.actual}`).join('\n') || 'No expenses recorded yet.'}`;
 
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        systemInstruction: 'Provide crisp, structured, realistic budget optimization guidance grounded strictly in the provided figures (3-4 concise points per array).',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            summary: { type: Type.STRING },
-            costSavingSuggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
-            spendingWarnings: { type: Type.ARRAY, items: { type: Type.STRING } },
-            reallocationSuggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
-            alternativeIdeas: { type: Type.ARRAY, items: { type: Type.STRING } },
-            priorityRecommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
-            budgetRiskAnalysis: { type: Type.STRING }
-          },
-          required: [
-            'summary', 'costSavingSuggestions', 'spendingWarnings',
-            'reallocationSuggestions', 'alternativeIdeas',
-            'priorityRecommendations', 'budgetRiskAnalysis'
-          ]
-        }
+  const response = await runGeminiCall(ai, (model, thinkingLevel) => ({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel },
+      systemInstruction: 'Provide crisp, structured, realistic budget optimization guidance grounded strictly in the provided figures (3-4 concise points per array).',
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          summary: { type: Type.STRING },
+          costSavingSuggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
+          spendingWarnings: { type: Type.ARRAY, items: { type: Type.STRING } },
+          reallocationSuggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
+          alternativeIdeas: { type: Type.ARRAY, items: { type: Type.STRING } },
+          priorityRecommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
+          budgetRiskAnalysis: { type: Type.STRING }
+        },
+        required: [
+          'summary', 'costSavingSuggestions', 'spendingWarnings',
+          'reallocationSuggestions', 'alternativeIdeas',
+          'priorityRecommendations', 'budgetRiskAnalysis'
+        ]
       }
-    })
-  );
+    }
+  }));
 
   return parseJsonSafe(response.text, {
     summary: 'Unable to parse structured advice.',
@@ -394,36 +449,34 @@ Avoid duplicating these existing tasks: ${existingTitles.slice(0, 25).join('; ')
 Event:
 ${formatEventSummary(event)}`;
 
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            tasks: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  priority: { type: Type.STRING },
-                  dueDate: { type: Type.STRING },
-                  category: { type: Type.STRING }
-                },
-                required: ['title', 'description', 'priority', 'dueDate', 'category']
-              }
+  const response = await runGeminiCall(ai, (model, thinkingLevel) => ({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel },
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          tasks: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                description: { type: Type.STRING },
+                priority: { type: Type.STRING },
+                dueDate: { type: Type.STRING },
+                category: { type: Type.STRING }
+              },
+              required: ['title', 'description', 'priority', 'dueDate', 'category']
             }
-          },
-          required: ['tasks']
-        }
+          }
+        },
+        required: ['tasks']
       }
-    })
-  );
+    }
+  }));
 
   const parsed = parseJsonSafe(response.text, { tasks: [] });
   const allowedCategories = new Set([
@@ -454,67 +507,65 @@ Event:
 ${formatEventSummary(event)}
 Creative Direction / Request: ${direction || event.style || 'Earthy Luxury Editorial'}`;
 
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        systemInstruction: 'Keep field descriptions crisp (1–2 impactful sentences per category) so the concept loads rapidly.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            name: { type: Type.STRING },
-            description: { type: Type.STRING },
-            palette: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-              description: 'Exactly 5 valid #RRGGBB hex codes.'
-            },
-            colorRoles: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  hex: { type: Type.STRING },
-                  name: { type: Type.STRING },
-                  usage: { type: Type.STRING }
-                },
-                required: ['hex', 'name', 'usage']
-              }
-            },
-            decoration: { type: Type.STRING },
-            lighting: { type: Type.STRING },
-            floral: { type: Type.STRING },
-            tableStyling: { type: Type.STRING },
-            venueStyling: { type: Type.STRING },
-            dressCode: { type: Type.STRING },
-            invitationConcept: { type: Type.STRING },
-            materials: { type: Type.STRING },
-            budgetAlternatives: { type: Type.STRING },
-            moodboardPanels: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  zone: { type: Type.STRING },
-                  visualBrief: { type: Type.STRING },
-                  keyElements: { type: Type.STRING }
-                },
-                required: ['zone', 'visualBrief', 'keyElements']
-              }
+  const response = await runGeminiCall(ai, (model, thinkingLevel) => ({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel },
+      systemInstruction: 'Keep field descriptions crisp (1–2 impactful sentences per category) so the concept loads rapidly.',
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING },
+          description: { type: Type.STRING },
+          palette: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'Exactly 5 valid #RRGGBB hex codes.'
+          },
+          colorRoles: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                hex: { type: Type.STRING },
+                name: { type: Type.STRING },
+                usage: { type: Type.STRING }
+              },
+              required: ['hex', 'name', 'usage']
             }
           },
-          required: [
-            'name', 'description', 'palette', 'colorRoles', 'decoration',
-            'lighting', 'floral', 'tableStyling', 'venueStyling', 'dressCode',
-            'invitationConcept', 'materials', 'budgetAlternatives', 'moodboardPanels'
-          ]
-        }
+          decoration: { type: Type.STRING },
+          lighting: { type: Type.STRING },
+          floral: { type: Type.STRING },
+          tableStyling: { type: Type.STRING },
+          venueStyling: { type: Type.STRING },
+          dressCode: { type: Type.STRING },
+          invitationConcept: { type: Type.STRING },
+          materials: { type: Type.STRING },
+          budgetAlternatives: { type: Type.STRING },
+          moodboardPanels: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                zone: { type: Type.STRING },
+                visualBrief: { type: Type.STRING },
+                keyElements: { type: Type.STRING }
+              },
+              required: ['zone', 'visualBrief', 'keyElements']
+            }
+          }
+        },
+        required: [
+          'name', 'description', 'palette', 'colorRoles', 'decoration',
+          'lighting', 'floral', 'tableStyling', 'venueStyling', 'dressCode',
+          'invitationConcept', 'materials', 'budgetAlternatives', 'moodboardPanels'
+        ]
       }
-    })
-  );
+    }
+  }));
 
   const parsed = parseJsonSafe(response.text, null);
   if (!parsed) throw new Error('Failed to generate theme concept.');
@@ -557,30 +608,28 @@ Custom Notes / Dress Code / RSVP Deadline: ${options.customNotes || 'Kindly RSVP
 Event:
 ${formatEventSummary(event)}`;
 
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            whatsapp: { type: Type.STRING },
-            emailSubject: { type: Type.STRING },
-            emailBody: { type: Type.STRING },
-            formal: { type: Type.STRING },
-            casual: { type: Type.STRING },
-            traditional: { type: Type.STRING },
-            modern: { type: Type.STRING },
-            custom: { type: Type.STRING }
-          },
-          required: ['whatsapp', 'emailSubject', 'emailBody', 'formal', 'casual', 'traditional', 'modern', 'custom']
-        }
+  const response = await runGeminiCall(ai, (model, thinkingLevel) => ({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel },
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          whatsapp: { type: Type.STRING },
+          emailSubject: { type: Type.STRING },
+          emailBody: { type: Type.STRING },
+          formal: { type: Type.STRING },
+          casual: { type: Type.STRING },
+          traditional: { type: Type.STRING },
+          modern: { type: Type.STRING },
+          custom: { type: Type.STRING }
+        },
+        required: ['whatsapp', 'emailSubject', 'emailBody', 'formal', 'casual', 'traditional', 'modern', 'custom']
       }
-    })
-  );
+    }
+  }));
 
   return parseJsonSafe(response.text, {});
 }
@@ -595,27 +644,25 @@ Specific Requirements: ${options.requirements || event.specialRequirements || 'S
 Event:
 ${formatEventSummary(event)}`;
 
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            emailSubject: { type: Type.STRING },
-            emailBody: { type: Type.STRING },
-            whatsappMessage: { type: Type.STRING },
-            shortInquiry: { type: Type.STRING },
-            followUpMessage: { type: Type.STRING }
-          },
-          required: ['emailSubject', 'emailBody', 'whatsappMessage', 'shortInquiry', 'followUpMessage']
-        }
+  const response = await runGeminiCall(ai, (model, thinkingLevel) => ({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel },
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          emailSubject: { type: Type.STRING },
+          emailBody: { type: Type.STRING },
+          whatsappMessage: { type: Type.STRING },
+          shortInquiry: { type: Type.STRING },
+          followUpMessage: { type: Type.STRING }
+        },
+        required: ['emailSubject', 'emailBody', 'whatsappMessage', 'shortInquiry', 'followUpMessage']
       }
-    })
-  );
+    }
+  }));
 
   return parseJsonSafe(response.text, {});
 }
@@ -632,35 +679,33 @@ Use 24-hour HH:MM format for timeSlot and endTime so slots do not overlap.
 Event:
 ${formatEventSummary(event)}`;
 
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
+  const response = await runGeminiCall(ai, (model, thinkingLevel) => ({
+    model,
+    contents: prompt,
+    config: {
+      thinkingConfig: { thinkingLevel },
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          items: {
+            type: Type.ARRAY,
             items: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  timeSlot: { type: Type.STRING },
-                  endTime: { type: Type.STRING },
-                  title: { type: Type.STRING },
-                  description: { type: Type.STRING }
-                },
-                required: ['timeSlot', 'endTime', 'title', 'description']
-              }
+              type: Type.OBJECT,
+              properties: {
+                timeSlot: { type: Type.STRING },
+                endTime: { type: Type.STRING },
+                title: { type: Type.STRING },
+                description: { type: Type.STRING }
+              },
+              required: ['timeSlot', 'endTime', 'title', 'description']
             }
-          },
-          required: ['items']
-        }
+          }
+        },
+        required: ['items']
       }
-    })
-  );
+    }
+  }));
 
   const parsed = parseJsonSafe(response.text, { items: [] });
   const normalized = (parsed.items || [])

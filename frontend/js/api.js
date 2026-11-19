@@ -1,6 +1,8 @@
 import { buildApiUrl } from '../config/apiConfig.js';
 
 const SESSION_STORAGE_KEY = 'avenora_session_v1';
+const API_BASE_URL =
+  "https://avenora-ai.onrender.com";
 
 export function getStoredSession() {
   try {

@@ -1,0 +1,6 @@
+{
+  "name": "AVENORA AI",
+  "description": "Plan moments. Create memories. An intelligent AI-powered event planning platform with structured blueprints, co-pilot, budget advisor, checklists, vendors, guests, timelines, and Theme Studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

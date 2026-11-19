@@ -1,0 +1,246 @@
+/* ==========================================================================
+   AVENORA AI — Design System & Core Tokens
+   Brand Tagline: Plan moments. Create memories.
+   ========================================================================== */
+
+:root {
+  /* Primary Brand Palette */
+  --color-carbon: #0B0D0C;
+  --color-forest-deep: #14251C;
+  --color-forest-rich: #1F3A2D;
+  --color-forest-mid: #355743;
+  --color-sage: #A3B59A;
+  --color-sage-deep: #5A765C;
+  --color-ivory: #F5F3ED;
+  --color-ivory-soft: #EDE9DF;
+  --color-chestnut: #8B6548;
+  --color-sand: #C7A98A;
+  --color-sand-light: #D8C6B2;
+
+  /* Signature Gradients */
+  --grad-1: linear-gradient(135deg, #0B0D0C, #14251C, #355743);
+  --grad-2: linear-gradient(135deg, #14251C, #5A765C, #A3B59A);
+  --grad-3: linear-gradient(135deg, #0B0D0C, #483527, #8B6548);
+  --grad-4: linear-gradient(135deg, #F5F3ED, #D8C6B2, #C7A98A);
+  --grad-5: linear-gradient(135deg, #1F3A2D, #14251C, #0B0D0C);
+
+  /* Semantic Status Colors (Paired with explicit text labels) */
+  --status-success: #4F7D5B;
+  --status-success-bg: rgba(79, 125, 91, 0.14);
+  --status-warning: #B77936;
+  --status-warning-bg: rgba(183, 121, 54, 0.14);
+  --status-danger: #B84A39;
+  --status-danger-bg: rgba(184, 74, 57, 0.14);
+
+  /* Typography */
+  --font-display: 'Cormorant Garamond', Georgia, serif;
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+
+  /* Borders & Elevations */
+  --border-dark: 1px solid rgba(163, 181, 154, 0.16);
+  --border-dark-strong: 1px solid rgba(163, 181, 154, 0.28);
+  --border-ivory: 1px solid rgba(20, 37, 28, 0.12);
+  --shadow-soft: 0 18px 48px rgba(0, 0, 0, 0.34);
+  --shadow-card: 0 8px 28px rgba(11, 13, 12, 0.18);
+
+  /* Spacing & Radii */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --transition-fast: 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-smooth: 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--color-carbon);
+  color: var(--color-ivory);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-sage);
+  outline-offset: 2px;
+}
+
+/* Typography Hierarchy */
+h1, h2, h3, .font-display {
+  font-family: var(--font-display);
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.12;
+  text-wrap: balance;
+}
+
+h4, h5, h6 {
+  font-family: var(--font-sans);
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+p {
+  margin: 0;
+}
+
+.tabular-nums {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.text-sage {
+  color: var(--color-sage);
+}
+
+.text-sand {
+  color: var(--color-sand);
+}
+
+.text-ivory {
+  color: var(--color-ivory);
+}
+
+.text-muted-dark {
+  color: rgba(245, 243, 237, 0.72);
+}
+
+.text-muted-ivory {
+  color: rgba(20, 37, 28, 0.68);
+}
+
+/* Surface Primitives */
+.surface-forest {
+  background: rgba(20, 37, 28, 0.76);
+  backdrop-filter: blur(16px);
+  border: var(--border-dark);
+  border-radius: var(--radius-lg);
+  color: var(--color-ivory);
+}
+
+.surface-ivory {
+  background-color: var(--color-ivory);
+  border: var(--border-ivory);
+  border-radius: var(--radius-lg);
+  color: var(--color-forest-deep);
+  box-shadow: var(--shadow-card);
+}
+
+.surface-ivory-gradient {
+  background: var(--grad-4);
+  border: var(--border-ivory);
+  border-radius: var(--radius-lg);
+  color: var(--color-carbon);
+}
+
+/* Ambient Forest Background Glows */
+.ambient-canvas {
+  position: relative;
+  background:
+    radial-gradient(900px 520px at 82% -8%, rgba(53, 87, 67, 0.34), transparent 65%),
+    radial-gradient(700px 460px at 10% 18%, rgba(139, 101, 72, 0.14), transparent 65%),
+    var(--color-carbon);
+}
+
+/* Landing Container */
+.container {
+  width: 100%;
+  max-width: 1240px;
+  margin-inline: auto;
+  padding-inline: 28px;
+}
+
+/* Unboxed Metadata Strip (Zero-Pill Discipline) */
+.meta-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.meta-sep {
+  opacity: 0.45;
+  user-select: none;
+}
+
+/* Resilient Image Frame Fallback */
+.media-frame {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--grad-1);
+}
+
+.media-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(11, 13, 12, 0.08) 0%, rgba(11, 13, 12, 0.72) 100%);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media print {
+  body {
+    background: #FFFFFF !important;
+    color: #0B0D0C !important;
+  }
+  .no-print, .workspace-sidebar, .workspace-topbar {
+    display: none !important;
+  }
+  .workspace-main {
+    margin-left: 0 !important;
+    padding: 0 !important;
+  }
+  .surface-ivory, .surface-forest {
+    box-shadow: none !important;
+    border: 1px solid #D8C6B2 !important;
+    background: #FFFFFF !important;
+    color: #0B0D0C !important;
+  }
+}

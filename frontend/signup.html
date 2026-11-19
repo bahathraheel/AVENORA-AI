@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Get Started — AVENORA AI</title>
+    <meta name="description" content="Create your AVENORA AI account and start planning extraordinary events." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/style.css" />
+    <link rel="stylesheet" href="/css/components.css" />
+    <link rel="stylesheet" href="/css/dashboard.css" />
+    <link rel="stylesheet" href="/css/responsive.css" />
+    <style>
+      .auth-alert { display:none; padding:12px 14px; border-radius:8px; font-size:13px; margin-bottom:16px; }
+      .auth-alert-error { background:rgba(184,74,57,0.12); color:#9A3323; border:1px solid rgba(184,74,57,0.28); }
+      .auth-alert-success { background:rgba(79,125,91,0.12); color:#2D5E3B; border:1px solid rgba(79,125,91,0.28); }
+    </style>
+  </head>
+  <body>
+    <main class="auth-shell">
+      <section class="auth-editorial-panel">
+        <a href="/index.html" class="brand-wordmark">AVENORA <span>AI</span></a>
+        <div>
+          <p class="text-sage" style="font-size:13px;font-weight:600;margin-bottom:10px;">Plan moments. Create memories.</p>
+          <h1 style="font-size:44px;margin-bottom:14px;">Design your next event with quiet precision.</h1>
+          <p class="text-muted-dark" style="max-width:44ch;">Create an account to save multiple event workspaces, generate 16-section blueprints, and collaborate with your AI Co-Pilot.</p>
+        </div>
+        <div class="meta-inline text-muted-dark" style="font-size:13px;">
+          <span>Private User Data</span>
+          <span class="meta-sep">·</span>
+          <span>Zero Mock Metrics</span>
+        </div>
+      </section>
+
+      <section class="auth-form-panel">
+        <div class="surface-ivory auth-card">
+          <h2 style="font-size:32px;margin-bottom:6px;">Create Account</h2>
+          <p class="text-muted-ivory" style="font-size:14px;margin-bottom:20px;">Start with Google or register with email.</p>
+
+          <div id="auth-status-banner" class="auth-alert"></div>
+
+          <button type="button" id="google-auth-btn" class="btn btn-ivory-outline" style="width:100%;margin-bottom:18px;">
+            <i data-lucide="shield-check" style="width:17px;height:17px;"></i>
+            <span>Continue with Google</span>
+          </button>
+
+          <div style="text-align:center;font-size:12px;color:rgba(20,37,28,0.55);margin-bottom:18px;">or sign up with email</div>
+
+          <form id="signup-form" style="display:flex;flex-direction:column;gap:14px;">
+            <div class="field-group">
+              <label class="field-label" for="signup-name">Full Name</label>
+              <input id="signup-name" class="field-input" required maxlength="120" placeholder="Your name" />
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="signup-email">Email Address</label>
+              <input id="signup-email" type="email" class="field-input" required placeholder="you@example.com" />
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="signup-password">Password (min 6 chars)</label>
+              <input id="signup-password" type="password" class="field-input" required minlength="6" placeholder="Create password" />
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="signup-confirm">Confirm Password</label>
+              <input id="signup-confirm" type="password" class="field-input" required minlength="6" placeholder="Confirm password" />
+            </div>
+            <button type="submit" id="signup-submit-btn" class="btn btn-ivory-primary" style="width:100%;margin-top:6px;">Create Account</button>
+          </form>
+
+          <div style="margin-top:16px;text-align:center;font-size:13.5px;">
+            Already have an account? <a href="/login.html" style="font-weight:600;color:var(--color-forest-rich);">Sign In</a>
+          </div>
+          <p class="text-muted-ivory" style="font-size:12px;margin-top:14px;line-height:1.5;">
+            Accounts are provisioned securely through the AVENORA AI backend on Firebase project <strong>avenora-ai</strong> without exposing keys in client code.
+          </p>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/js/auth.js"></script>
+  </body>
+</html>

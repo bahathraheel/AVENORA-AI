@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Guests & Invitations — AVENORA AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/style.css" />
+    <link rel="stylesheet" href="/css/components.css" />
+    <link rel="stylesheet" href="/css/dashboard.css" />
+    <link rel="stylesheet" href="/css/responsive.css" />
+  </head>
+  <body>
+    <div class="workspace-layout">
+      <aside id="workspace-sidebar" class="workspace-sidebar"></aside>
+      <div class="workspace-body">
+        <header id="workspace-topbar" class="workspace-topbar"></header>
+        <main class="workspace-main">
+          <div id="guests-root">
+            <div class="workspace-loader-shell">
+              <div class="ai-loading-box">
+                <div class="ai-spinner ai-spinner-lg"></div>
+                <div class="ai-loading-copy">
+                  <span class="ai-loading-title">Loading guest roster & invitations</span>
+                  <span class="ai-loading-sub">Fetching RSVPs, dietary preferences, and table assignments...</span>
+                </div>
+              </div>
+              <div class="skeleton-kpi-grid" aria-hidden="true">
+                <div class="skeleton-card"><div class="skeleton-line sm"></div><div class="skeleton-line lg"></div></div>
+                <div class="skeleton-card"><div class="skeleton-line sm"></div><div class="skeleton-line lg"></div></div>
+                <div class="skeleton-card"><div class="skeleton-line sm"></div><div class="skeleton-line lg"></div></div>
+                <div class="skeleton-card"><div class="skeleton-line sm"></div><div class="skeleton-line lg"></div></div>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+    <script type="module" src="/js/guests.js"></script>
+  </body>
+</html>

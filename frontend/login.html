@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sign In — AVENORA AI</title>
+    <meta name="description" content="Sign in to your AVENORA AI event planning workspace." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/style.css" />
+    <link rel="stylesheet" href="/css/components.css" />
+    <link rel="stylesheet" href="/css/dashboard.css" />
+    <link rel="stylesheet" href="/css/responsive.css" />
+    <style>
+      .auth-alert { display:none; padding:12px 14px; border-radius:8px; font-size:13px; margin-bottom:16px; }
+      .auth-alert-error { background:rgba(184,74,57,0.12); color:#9A3323; border:1px solid rgba(184,74,57,0.28); }
+      .auth-alert-success { background:rgba(79,125,91,0.12); color:#2D5E3B; border:1px solid rgba(79,125,91,0.28); }
+    </style>
+  </head>
+  <body>
+    <main class="auth-shell">
+      <section class="auth-editorial-panel">
+        <a href="/index.html" class="brand-wordmark">AVENORA <span>AI</span></a>
+        <div>
+          <p class="text-sage" style="font-size:13px;font-weight:600;margin-bottom:10px;">Plan moments. Create memories.</p>
+          <h1 style="font-size:44px;margin-bottom:14px;">Welcome back to your planning studio.</h1>
+          <p class="text-muted-dark" style="max-width:44ch;">Access your multi-event blueprints, live budgets, guest RSVPs, vendor inquiries, and AI Co-Pilot.</p>
+        </div>
+        <div class="meta-inline text-muted-dark" style="font-size:13px;">
+          <span>Protected Firebase Workspace</span>
+          <span class="meta-sep">·</span>
+          <span>Persistent Sessions</span>
+        </div>
+      </section>
+
+      <section class="auth-form-panel">
+        <div class="surface-ivory auth-card">
+          <h2 style="font-size:32px;margin-bottom:6px;">Sign In</h2>
+          <p class="text-muted-ivory" style="font-size:14px;margin-bottom:20px;">Continue with Google or your email and password.</p>
+
+          <div id="auth-status-banner" class="auth-alert"></div>
+
+          <button type="button" id="google-auth-btn" class="btn btn-ivory-outline" style="width:100%;margin-bottom:18px;">
+            <i data-lucide="shield-check" style="width:17px;height:17px;"></i>
+            <span>Continue with Google</span>
+          </button>
+
+          <div style="text-align:center;font-size:12px;color:rgba(20,37,28,0.55);margin-bottom:18px;">or sign in with email</div>
+
+          <form id="login-form" style="display:flex;flex-direction:column;gap:14px;">
+            <div class="field-group">
+              <label class="field-label" for="login-email">Email Address</label>
+              <input id="login-email" type="email" class="field-input" required placeholder="you@example.com" />
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="login-password">Password</label>
+              <input id="login-password" type="password" class="field-input" required placeholder="Enter your password" />
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <button type="button" id="reset-password-btn" style="background:none;border:none;padding:0;font-size:13px;font-weight:600;color:var(--color-forest-rich);cursor:pointer;">Reset Password</button>
+              <a href="/signup.html" style="font-size:13px;font-weight:600;color:var(--color-chestnut);">Create account</a>
+            </div>
+            <button type="submit" id="login-submit-btn" class="btn btn-ivory-primary" style="width:100%;margin-top:6px;">Sign In</button>
+          </form>
+
+          <p class="text-muted-ivory" style="font-size:12px;margin-top:18px;line-height:1.5;">
+            Authentication runs securely through the AVENORA AI backend for Firebase project <strong>avenora-ai</strong>. Zero API keys are exposed in your browser.
+          </p>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/js/auth.js"></script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "avenora-ai-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AVENORA AI static MPA frontend (HTML5, CSS3, Vanilla JavaScript, Chart.js, Lucide)",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "chart.js": "^4.6.1",
+    "lucide": "^1.75.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.0"
+  }
+}

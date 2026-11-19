@@ -1,0 +1,222 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user account preferences and profile settings.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 180 },
+        "preferredCurrency": { "type": "string", "enum": ["INR", "USD", "EUR", "GBP", "AED", "SGD", "AUD", "CAD"], "maxLength": 8 },
+        "notificationsEnabled": { "type": "boolean" },
+        "deadlineReminders": { "type": "boolean" },
+        "aiDigestEnabled": { "type": "boolean" },
+        "roleNote": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email", "preferredCurrency", "notificationsEnabled", "deadlineReminders", "aiDigestEnabled", "createdAt", "updatedAt"]
+    },
+    "EventDoc": {
+      "title": "EventDoc",
+      "description": "Primary event workspace container with core parameters and saved AI blueprint.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "type": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "date": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "location": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "guestCount": { "type": "integer" },
+        "budget": { "type": "number" },
+        "currency": { "type": "string", "enum": ["INR", "USD", "EUR", "GBP", "AED", "SGD", "AUD", "CAD"], "maxLength": 8 },
+        "style": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "preferences": { "type": "string", "maxLength": 1500 },
+        "specialRequirements": { "type": "string", "maxLength": 1500 },
+        "status": { "type": "string", "enum": ["planning", "in_progress", "ready", "completed"], "maxLength": 32 },
+        "blueprint": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "name", "type", "date", "location", "guestCount", "budget", "currency", "style", "status", "createdAt", "updatedAt"]
+    },
+    "TaskDoc": {
+      "title": "TaskDoc",
+      "description": "Event checklist task item with priority, due date, category, and completion state.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "eventId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "priority": { "type": "string", "enum": ["high", "medium", "low"], "maxLength": 16 },
+        "dueDate": { "type": "string", "maxLength": 32 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "status": { "type": "string", "enum": ["pending", "completed"], "maxLength": 16 },
+        "aiGenerated": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "eventId", "title", "priority", "category", "status", "aiGenerated", "createdAt", "updatedAt"]
+    },
+    "ExpenseDoc": {
+      "title": "ExpenseDoc",
+      "description": "Budget line item tracking estimated cost, actual spend, payment status, and linked vendor.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "eventId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "vendorId": { "type": "string", "maxLength": 128 },
+        "vendorName": { "type": "string", "maxLength": 160 },
+        "estimatedCost": { "type": "number" },
+        "actualCost": { "type": "number" },
+        "paymentStatus": { "type": "string", "enum": ["unpaid", "partial", "paid"], "maxLength": 16 },
+        "expenseDate": { "type": "string", "maxLength": 32 },
+        "notes": { "type": "string", "maxLength": 800 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "eventId", "title", "category", "estimatedCost", "actualCost", "paymentStatus", "createdAt", "updatedAt"]
+    },
+    "GuestDoc": {
+      "title": "GuestDoc",
+      "description": "Event guest record tracking contact details, group, RSVP, invitation, attendance, and dietary notes.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "eventId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "email": { "type": "string", "maxLength": 180 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "group": { "type": "string", "enum": ["Family", "Friends", "Colleagues", "VIP", "Other"], "maxLength": 32 },
+        "rsvpStatus": { "type": "string", "enum": ["pending", "confirmed", "declined"], "maxLength": 16 },
+        "invitationStatus": { "type": "string", "enum": ["not_sent", "sent", "opened"], "maxLength": 16 },
+        "attendanceStatus": { "type": "string", "enum": ["not_checked_in", "attended", "absent"], "maxLength": 24 },
+        "dietaryNotes": { "type": "string", "maxLength": 300 },
+        "notes": { "type": "string", "maxLength": 600 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "eventId", "name", "group", "rsvpStatus", "invitationStatus", "attendanceStatus", "createdAt", "updatedAt"]
+    },
+    "VendorDoc": {
+      "title": "VendorDoc",
+      "description": "Event vendor record tracking category, status, contact info, estimated/actual cost, and booking date.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "eventId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "status": { "type": "string", "enum": ["shortlisted", "contacted", "booked", "paid", "declined"], "maxLength": 24 },
+        "contactInfo": { "type": "string", "maxLength": 300 },
+        "estimatedCost": { "type": "number" },
+        "actualCost": { "type": "number" },
+        "paymentStatus": { "type": "string", "enum": ["unpaid", "deposit_paid", "paid"], "maxLength": 24 },
+        "bookingDate": { "type": "string", "maxLength": 32 },
+        "notes": { "type": "string", "maxLength": 800 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "eventId", "name", "category", "status", "estimatedCost", "actualCost", "paymentStatus", "createdAt", "updatedAt"]
+    },
+    "TimelineDoc": {
+      "title": "TimelineDoc",
+      "description": "Scheduled activity slot on an event's timeline.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "eventId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "timeSlot": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "endTime": { "type": "string", "maxLength": 32 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 800 },
+        "orderIndex": { "type": "integer" },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "eventId", "timeSlot", "title", "orderIndex", "completed", "createdAt", "updatedAt"]
+    },
+    "ChatDoc": {
+      "title": "ChatDoc",
+      "description": "AI Event Co-Pilot conversation turn persisted per event.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "eventId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "role": { "type": "string", "enum": ["user", "assistant"], "maxLength": 16 },
+        "content": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "conversationId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "eventId", "role", "content", "conversationId", "createdAt"]
+    },
+    "ThemeDoc": {
+      "title": "ThemeDoc",
+      "description": "Saved aesthetic theme concept and moodboard composition from Theme Studio.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "eventId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 1500 },
+        "palette": { "type": "array" },
+        "decoration": { "type": "string", "maxLength": 1000 },
+        "lighting": { "type": "string", "maxLength": 800 },
+        "floral": { "type": "string", "maxLength": 800 },
+        "tableStyling": { "type": "string", "maxLength": 800 },
+        "venueStyling": { "type": "string", "maxLength": 800 },
+        "dressCode": { "type": "string", "maxLength": 500 },
+        "invitationConcept": { "type": "string", "maxLength": 800 },
+        "materials": { "type": "string", "maxLength": 800 },
+        "budgetAlternatives": { "type": "string", "maxLength": 1000 },
+        "moodboardSpecs": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "eventId", "name", "description", "palette", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user account profile and preferences."
+    },
+    "/users/{userId}/events/{eventId}": {
+      "schema": { "$ref": "#/entities/EventDoc" },
+      "description": "User-owned event workspaces and saved AI event blueprints."
+    },
+    "/users/{userId}/events/{eventId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/TaskDoc" },
+      "description": "Checklist tasks scoped to an event."
+    },
+    "/users/{userId}/events/{eventId}/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/ExpenseDoc" },
+      "description": "Budget expenses scoped to an event."
+    },
+    "/users/{userId}/events/{eventId}/guests/{guestId}": {
+      "schema": { "$ref": "#/entities/GuestDoc" },
+      "description": "Guest roster and RSVP tracking scoped to an event."
+    },
+    "/users/{userId}/events/{eventId}/vendors/{vendorId}": {
+      "schema": { "$ref": "#/entities/VendorDoc" },
+      "description": "Vendors and booking tracking scoped to an event."
+    },
+    "/users/{userId}/events/{eventId}/timeline/{timelineId}": {
+      "schema": { "$ref": "#/entities/TimelineDoc" },
+      "description": "Event schedule timeline slots."
+    },
+    "/users/{userId}/events/{eventId}/chats/{chatId}": {
+      "schema": { "$ref": "#/entities/ChatDoc" },
+      "description": "AI Event Co-Pilot conversation history."
+    },
+    "/users/{userId}/events/{eventId}/themes/{themeId}": {
+      "schema": { "$ref": "#/entities/ThemeDoc" },
+      "description": "Saved Theme Studio concepts and color palettes."
+    }
+  }
+}

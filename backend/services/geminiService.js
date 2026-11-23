@@ -20,7 +20,7 @@ function getGeminiClient() {
   });
 }
 
-function normalizeGeminiError(err) {
+function extractGeminiErrorInfo(err) {
   const rawMsg = String(err?.message || '');
   let parsed = null;
   if (rawMsg.trim().startsWith('{')) {
@@ -35,8 +35,13 @@ function normalizeGeminiError(err) {
   const status = Number(nestedErr.code || err?.status || err?.statusCode) || 500;
   const apiStatus = String(nestedErr.status || err?.code || '').toUpperCase();
   const detailMsg = String(nestedErr.message || rawMsg || 'AI generation failed.');
+  return { status, apiStatus, detailMsg };
+}
 
-  if (status === 429 || apiStatus === 'RESOURCE_EXHAUSTED' || detailMsg.includes('quota')) {
+function normalizeGeminiError(err) {
+  const { status, apiStatus, detailMsg } = extractGeminiErrorInfo(err);
+
+  if (status === 429 || apiStatus === 'RESOURCE_EXHAUSTED' || detailMsg.toLowerCase().includes('quota')) {
     const retryMatch = detailMsg.match(/retry in\s+([0-9hms.]+)/i);
     const retryHint = retryMatch ? ` Retry window: ${retryMatch[1]}.` : '';
     const friendly = new Error(
@@ -44,6 +49,20 @@ function normalizeGeminiError(err) {
     );
     friendly.statusCode = 429;
     friendly.code = 'RESOURCE_EXHAUSTED';
+    return friendly;
+  }
+
+  if (
+    status === 503 ||
+    apiStatus === 'UNAVAILABLE' ||
+    detailMsg.toLowerCase().includes('high demand') ||
+    detailMsg.toLowerCase().includes('overloaded')
+  ) {
+    const friendly = new Error(
+      'AI models are currently experiencing temporary high demand. Please wait a few seconds and try again.'
+    );
+    friendly.statusCode = 503;
+    friendly.code = 'UNAVAILABLE';
     return friendly;
   }
 
@@ -61,24 +80,40 @@ function normalizeGeminiError(err) {
   return friendly;
 }
 
-function isQuotaError(err) {
-  const status = Number(err?.status || err?.statusCode || 0);
-  const msg = String(err?.message || '');
-  return status === 429 || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota');
+function shouldFallbackModel(err) {
+  const { status, apiStatus, detailMsg } = extractGeminiErrorInfo(err);
+  const lower = detailMsg.toLowerCase();
+  return (
+    status === 429 ||
+    status === 404 ||
+    status >= 500 ||
+    apiStatus === 'RESOURCE_EXHAUSTED' ||
+    apiStatus === 'UNAVAILABLE' ||
+    apiStatus === 'INTERNAL' ||
+    lower.includes('quota') ||
+    lower.includes('high demand') ||
+    lower.includes('overloaded') ||
+    lower.includes('temporarily unavailable')
+  );
 }
 
 async function runGeminiCall(ai, paramsBuilder) {
-  const tryModel = async (modelName, thinkingLevel) => {
+  const tryModel = async (modelName, thinkingLevel, maxRetries = 1) => {
     const params = paramsBuilder(modelName, thinkingLevel);
     let lastErr;
-    for (let attempt = 0; attempt <= 1; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         return await ai.models.generateContent(params);
       } catch (err) {
         lastErr = err;
-        const status = Number(err?.status || err?.statusCode || 500);
-        if (attempt === 0 && status >= 500) {
-          await new Promise((r) => setTimeout(r, 400));
+        const { status, apiStatus, detailMsg } = extractGeminiErrorInfo(err);
+        const isTransient =
+          status >= 500 ||
+          apiStatus === 'UNAVAILABLE' ||
+          detailMsg.toLowerCase().includes('high demand');
+        if (attempt < maxRetries && isTransient) {
+          const delay = 500 * Math.pow(2, attempt);
+          await new Promise((r) => setTimeout(r, delay));
           continue;
         }
         throw err;
@@ -88,11 +123,11 @@ async function runGeminiCall(ai, paramsBuilder) {
   };
 
   try {
-    return await tryModel(MODEL_NAME, ThinkingLevel.LOW);
+    return await tryModel(MODEL_NAME, ThinkingLevel.LOW, 1);
   } catch (primaryErr) {
-    if (isQuotaError(primaryErr)) {
+    if (shouldFallbackModel(primaryErr)) {
       try {
-        return await tryModel(FALLBACK_MODEL_NAME, ThinkingLevel.MINIMAL);
+        return await tryModel(FALLBACK_MODEL_NAME, ThinkingLevel.MINIMAL, 2);
       } catch (fallbackErr) {
         throw normalizeGeminiError(fallbackErr);
       }

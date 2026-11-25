@@ -1,32 +1,16 @@
 import { apiRequest, callAiEndpoint } from './api.js';
 import {
+  closeModalElement,
   escapeHtml,
   initProtectedPage,
   openConfirmModal,
+  openModalElement,
   renderIcons,
   renderNoEventState,
   setButtonLoading,
   showToast
 } from './main.js';
-
-function detectConflicts(items) {
-  const conflicts = new Set();
-  for (let i = 0; i < items.length; i++) {
-    for (let j = i + 1; j < items.length; j++) {
-      const a = items[i];
-      const b = items[j];
-      if (!a.timeSlot || !b.timeSlot) continue;
-      if (a.timeSlot === b.timeSlot) {
-        conflicts.add(a.id);
-        conflicts.add(b.id);
-      } else if (a.endTime && b.timeSlot < a.endTime && b.timeSlot >= a.timeSlot) {
-        conflicts.add(a.id);
-        conflicts.add(b.id);
-      }
-    }
-  }
-  return conflicts;
-}
+import { detectTimelineConflicts } from './utils.js';
 
 initProtectedPage({
   activeKey: 'timeline',
@@ -47,24 +31,162 @@ initProtectedPage({
       items = data.items || [];
     }
 
-    function render() {
-      const conflicts = detectConflicts(items);
+    function openItemModal(item = null) {
+      const modal = document.getElementById('tl-modal');
+      if (!modal) return;
+      document.getElementById('tl-modal-title').textContent = item ? 'Edit Activity' : 'Add Activity';
+      document.getElementById('tl-id').value = item?.id || '';
+      document.getElementById('tl-time').value = item?.timeSlot || '17:00';
+      document.getElementById('tl-end').value = item?.endTime || '';
+      document.getElementById('tl-title').value = item?.title || '';
+      document.getElementById('tl-desc').value = item?.description || '';
+      openModalElement(modal, '#tl-time');
+    }
+
+    const swapOrder = async (idxA, idxB) => {
+      const a = items[idxA];
+      const b = items[idxB];
+      if (!a || !b) return;
+      try {
+        const res = await apiRequest(`${apiBase}/reorder`, {
+          method: 'PUT',
+          body: {
+            pairs: [
+              { id: a.id, orderIndex: idxB },
+              { id: b.id, orderIndex: idxA }
+            ]
+          }
+        });
+        items = res.items || items;
+        renderTimelineSection();
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    };
+
+    function renderTimelineSection() {
+      const conflicts = detectTimelineConflicts(items);
       const completedCount = items.filter((i) => i.completed).length;
 
+      const metaEl = document.getElementById('timeline-summary-meta');
+      if (metaEl) {
+        metaEl.innerHTML = `
+          <span class="tabular-nums">${items.length} scheduled activities</span>
+          <span class="meta-sep">·</span>
+          <span class="tabular-nums">${completedCount} completed</span>
+          ${conflicts.size > 0 ? `<span class="meta-sep">·</span><span style="color:#E58070;">${conflicts.size} potential time conflict(s)</span>` : ''}
+        `;
+      }
+
+      const listSection = document.getElementById('timeline-list-section');
+      if (!listSection) return;
+
+      listSection.innerHTML =
+        items.length === 0
+          ? `<div class="empty-state">
+              <p class="text-muted-ivory">No timeline slots created yet. Generate an AI run-of-show or add activities manually.</p>
+              <button type="button" id="empty-add-slot" class="btn btn-ivory-primary">Add First Activity</button>
+            </div>`
+          : `<div class="timeline-list">
+              ${items
+                .map(
+                  (item, idx) => `
+                  <article class="timeline-row ${item.completed ? 'completed' : ''}">
+                    <div>
+                      <div class="tabular-nums" style="font-weight:700;font-size:15px;">
+                        ${escapeHtml(item.timeSlot)}${item.endTime ? ` – ${escapeHtml(item.endTime)}` : ''}
+                      </div>
+                      ${conflicts.has(item.id) ? `<div class="status-danger" style="font-size:12px;margin-top:4px;">Time overlap warning</div>` : ''}
+                    </div>
+                    <div>
+                      <div style="display:flex;align-items:center;gap:10px;">
+                        <input type="checkbox" data-toggle-tl="${escapeHtml(item.id)}" ${item.completed ? 'checked' : ''} style="width:17px;height:17px;cursor:pointer;" aria-label="Mark ${escapeHtml(item.title)} complete" />
+                        <strong style="font-size:16px;${item.completed ? 'text-decoration:line-through;' : ''}">${escapeHtml(item.title)}</strong>
+                      </div>
+                      ${item.description ? `<p class="text-muted-ivory" style="font-size:13.5px;margin-top:6px;">${escapeHtml(item.description)}</p>` : ''}
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                      <button type="button" class="btn btn-sm btn-ivory-outline" data-move-up="${idx}" aria-label="Move ${escapeHtml(item.title)} up" ${idx === 0 ? 'disabled' : ''}>Up</button>
+                      <button type="button" class="btn btn-sm btn-ivory-outline" data-move-down="${idx}" aria-label="Move ${escapeHtml(item.title)} down" ${idx === items.length - 1 ? 'disabled' : ''}>Down</button>
+                      <button type="button" class="btn btn-sm btn-ivory-outline" data-edit-tl="${escapeHtml(item.id)}">Edit</button>
+                      <button type="button" class="btn btn-sm btn-danger-ivory" data-del-tl="${escapeHtml(item.id)}">Delete</button>
+                    </div>
+                  </article>`
+                )
+                .join('')}
+            </div>`;
+
+      listSection.querySelector('#empty-add-slot')?.addEventListener('click', () => openItemModal(null));
+
+      listSection.querySelectorAll('[data-toggle-tl]').forEach((cb) => {
+        cb.onchange = async () => {
+          const id = cb.dataset.toggleTl;
+          try {
+            await apiRequest(`${apiBase}/${encodeURIComponent(id)}`, {
+              method: 'PUT',
+              body: { completed: cb.checked }
+            });
+            await loadTimeline();
+            renderTimelineSection();
+          } catch (err) {
+            cb.checked = !cb.checked;
+            showToast(err.message, 'error');
+          }
+        };
+      });
+
+      listSection.querySelectorAll('[data-move-up]').forEach((b) => {
+        b.onclick = () => {
+          const idx = Number(b.dataset.moveUp);
+          swapOrder(idx, idx - 1);
+        };
+      });
+
+      listSection.querySelectorAll('[data-move-down]').forEach((b) => {
+        b.onclick = () => {
+          const idx = Number(b.dataset.moveDown);
+          swapOrder(idx, idx + 1);
+        };
+      });
+
+      listSection.querySelectorAll('[data-edit-tl]').forEach((b) => {
+        b.onclick = () => openItemModal(items.find((x) => x.id === b.dataset.editTl));
+      });
+
+      listSection.querySelectorAll('[data-del-tl]').forEach((b) => {
+        b.onclick = () => {
+          const target = items.find((x) => x.id === b.dataset.delTl);
+          openConfirmModal({
+            title: 'Delete Activity?',
+            message: `Remove "${target?.title}" from the timeline?`,
+            confirmLabel: 'Delete',
+            onConfirm: async () => {
+              try {
+                await apiRequest(`${apiBase}/${encodeURIComponent(target.id)}`, { method: 'DELETE' });
+                await loadTimeline();
+                renderTimelineSection();
+                showToast('Activity removed.', 'success');
+              } catch (err) {
+                showToast(err.message, 'error');
+              }
+            }
+          });
+        };
+      });
+
+      renderIcons();
+    }
+
+    function renderShell() {
       root.innerHTML = `
         <section class="surface-forest panel-pad" style="margin-bottom:20px;">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
             <div>
               <h1 style="font-size:34px;">AI Event Timeline</h1>
-              <div class="meta-inline text-sage" style="font-size:13px;margin-top:4px;">
-                <span class="tabular-nums">${items.length} scheduled activities</span>
-                <span class="meta-sep">·</span>
-                <span class="tabular-nums">${completedCount} completed</span>
-                ${conflicts.size > 0 ? `<span class="meta-sep">·</span><span style="color:#E58070;">${conflicts.size} potential time conflict(s)</span>` : ''}
-              </div>
+              <div id="timeline-summary-meta" class="meta-inline text-sage" style="font-size:13px;margin-top:4px;"></div>
             </div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;">
-              <button type="button" id="open-ai-timeline" class="btn btn-primary">Generate AI Timeline</button>
+              <button type="button" id="open-ai-timeline" class="btn btn-primary" aria-expanded="false" aria-controls="ai-timeline-panel">Generate AI Timeline</button>
               <button type="button" id="open-add-slot" class="btn btn-secondary">Add Activity</button>
             </div>
           </div>
@@ -72,7 +194,7 @@ initProtectedPage({
 
         <div id="ai-timeline-panel" style="display:none;margin-bottom:20px;" class="surface-forest panel-pad">
           <h2 style="font-size:22px;margin-bottom:12px;">Schedule Parameters</h2>
-          <form id="ai-timeline-form" style="display:grid;grid-template-columns:150px 170px 1fr auto;gap:12px;align-items:end;">
+          <form id="ai-timeline-form" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;align-items:end;">
             <div class="field-group">
               <label class="field-label" for="tl-start">Start Time</label>
               <input id="tl-start" type="time" class="field-input field-input-dark" value="16:00" />
@@ -87,49 +209,13 @@ initProtectedPage({
             </div>
             <button type="submit" id="tl-gen-btn" class="btn btn-primary">Build Schedule</button>
           </form>
-          <div id="tl-loader" style="margin-top:14px;"></div>
+          <div id="tl-loader" style="margin-top:14px;" aria-live="polite"></div>
         </div>
 
-        <section class="surface-ivory panel-pad">
-          ${
-            items.length === 0
-              ? `<div class="empty-state">
-                  <p class="text-muted-ivory">No timeline slots created yet. Generate an AI run-of-show or add activities manually.</p>
-                  <button type="button" id="empty-add-slot" class="btn btn-ivory-primary">Add First Activity</button>
-                </div>`
-              : `<div class="timeline-list">
-                  ${items
-                    .map(
-                      (item, idx) => `
-                      <article class="timeline-row ${item.completed ? 'completed' : ''}">
-                        <div>
-                          <div class="tabular-nums" style="font-weight:700;font-size:15px;">
-                            ${escapeHtml(item.timeSlot)}${item.endTime ? ` – ${escapeHtml(item.endTime)}` : ''}
-                          </div>
-                          ${conflicts.has(item.id) ? `<div class="status-danger" style="font-size:12px;margin-top:4px;">Time overlap warning</div>` : ''}
-                        </div>
-                        <div>
-                          <div style="display:flex;align-items:center;gap:10px;">
-                            <input type="checkbox" data-toggle-tl="${escapeHtml(item.id)}" ${item.completed ? 'checked' : ''} style="width:17px;height:17px;cursor:pointer;" aria-label="Mark activity complete" />
-                            <strong style="font-size:16px;${item.completed ? 'text-decoration:line-through;' : ''}">${escapeHtml(item.title)}</strong>
-                          </div>
-                          ${item.description ? `<p class="text-muted-ivory" style="font-size:13.5px;margin-top:6px;">${escapeHtml(item.description)}</p>` : ''}
-                        </div>
-                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                          <button type="button" class="btn btn-sm btn-ivory-outline" data-move-up="${idx}" ${idx === 0 ? 'disabled' : ''}>Up</button>
-                          <button type="button" class="btn btn-sm btn-ivory-outline" data-move-down="${idx}" ${idx === items.length - 1 ? 'disabled' : ''}>Down</button>
-                          <button type="button" class="btn btn-sm btn-ivory-outline" data-edit-tl="${escapeHtml(item.id)}">Edit</button>
-                          <button type="button" class="btn btn-sm btn-danger-ivory" data-del-tl="${escapeHtml(item.id)}">Delete</button>
-                        </div>
-                      </article>`
-                    )
-                    .join('')}
-                </div>`
-          }
-        </section>
+        <section id="timeline-list-section" class="surface-ivory panel-pad"></section>
 
-        <div id="tl-modal" class="modal-backdrop">
-          <div class="modal-panel">
+        <div id="tl-modal" class="modal-backdrop" aria-hidden="true">
+          <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="tl-modal-title">
             <div class="modal-header">
               <h3 id="tl-modal-title" style="font-size:24px;">Add Activity</h3>
               <button type="button" class="btn btn-sm btn-ivory-outline" id="close-tl-modal">Close</button>
@@ -156,7 +242,7 @@ initProtectedPage({
               </div>
               <div class="modal-footer">
                 <button type="button" class="btn btn-ivory-outline" id="cancel-tl-modal">Cancel</button>
-                <button type="submit" class="btn btn-ivory-primary">Save Activity</button>
+                <button type="submit" id="save-tl-btn" class="btn btn-ivory-primary">Save Activity</button>
               </div>
             </form>
           </div>
@@ -164,25 +250,18 @@ initProtectedPage({
       `;
 
       const modal = document.getElementById('tl-modal');
-      const openModal = (item = null) => {
-        document.getElementById('tl-modal-title').textContent = item ? 'Edit Activity' : 'Add Activity';
-        document.getElementById('tl-id').value = item?.id || '';
-        document.getElementById('tl-time').value = item?.timeSlot || '17:00';
-        document.getElementById('tl-end').value = item?.endTime || '';
-        document.getElementById('tl-title').value = item?.title || '';
-        document.getElementById('tl-desc').value = item?.description || '';
-        modal.classList.add('open');
-      };
-      const closeModal = () => modal.classList.remove('open');
+      const closeModal = () => closeModalElement(modal);
 
-      document.getElementById('open-add-slot').onclick = () => openModal(null);
-      document.getElementById('empty-add-slot')?.addEventListener('click', () => openModal(null));
+      document.getElementById('open-add-slot').onclick = () => openItemModal(null);
       document.getElementById('close-tl-modal').onclick = closeModal;
       document.getElementById('cancel-tl-modal').onclick = closeModal;
 
-      document.getElementById('open-ai-timeline').onclick = () => {
+      const aiToggleBtn = document.getElementById('open-ai-timeline');
+      aiToggleBtn.onclick = () => {
         const panel = document.getElementById('ai-timeline-panel');
-        panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        const nextOpen = panel.style.display === 'none';
+        panel.style.display = nextOpen ? 'block' : 'none';
+        aiToggleBtn.setAttribute('aria-expanded', String(nextOpen));
       };
 
       document.getElementById('ai-timeline-form').onsubmit = async (e) => {
@@ -206,7 +285,9 @@ initProtectedPage({
             });
           }
           await loadTimeline();
-          render();
+          loader.innerHTML = '';
+          setButtonLoading(btn, false);
+          renderTimelineSection();
           showToast(`Added ${generated.length} timeline activities.`, 'success');
         } catch (err) {
           loader.innerHTML = '';
@@ -215,85 +296,9 @@ initProtectedPage({
         }
       };
 
-      root.querySelectorAll('[data-toggle-tl]').forEach((cb) => {
-        cb.onchange = async () => {
-          const id = cb.dataset.toggleTl;
-          try {
-            await apiRequest(`${apiBase}/${encodeURIComponent(id)}`, {
-              method: 'PUT',
-              body: { completed: cb.checked }
-            });
-            await loadTimeline();
-            render();
-          } catch (err) {
-            cb.checked = !cb.checked;
-            showToast(err.message, 'error');
-          }
-        };
-      });
-
-      const swapOrder = async (idxA, idxB) => {
-        const a = items[idxA];
-        const b = items[idxB];
-        if (!a || !b) return;
-        try {
-          const res = await apiRequest(`${apiBase}/reorder`, {
-            method: 'PUT',
-            body: {
-              pairs: [
-                { id: a.id, orderIndex: idxB },
-                { id: b.id, orderIndex: idxA }
-              ]
-            }
-          });
-          items = res.items || items;
-          render();
-        } catch (err) {
-          showToast(err.message, 'error');
-        }
-      };
-
-      root.querySelectorAll('[data-move-up]').forEach((b) => {
-        b.onclick = () => {
-          const idx = Number(b.dataset.moveUp);
-          swapOrder(idx, idx - 1);
-        };
-      });
-
-      root.querySelectorAll('[data-move-down]').forEach((b) => {
-        b.onclick = () => {
-          const idx = Number(b.dataset.moveDown);
-          swapOrder(idx, idx + 1);
-        };
-      });
-
-      root.querySelectorAll('[data-edit-tl]').forEach((b) => {
-        b.onclick = () => openModal(items.find((x) => x.id === b.dataset.editTl));
-      });
-
-      root.querySelectorAll('[data-del-tl]').forEach((b) => {
-        b.onclick = () => {
-          const target = items.find((x) => x.id === b.dataset.delTl);
-          openConfirmModal({
-            title: 'Delete Activity?',
-            message: `Remove "${target?.title}" from the timeline?`,
-            confirmLabel: 'Delete',
-            onConfirm: async () => {
-              try {
-                await apiRequest(`${apiBase}/${encodeURIComponent(target.id)}`, { method: 'DELETE' });
-                await loadTimeline();
-                render();
-                showToast('Activity removed.', 'success');
-              } catch (err) {
-                showToast(err.message, 'error');
-              }
-            }
-          });
-        };
-      });
-
       document.getElementById('tl-form').onsubmit = async (e) => {
         e.preventDefault();
+        const saveBtn = document.getElementById('save-tl-btn');
         const id = document.getElementById('tl-id').value;
         const timeSlot = document.getElementById('tl-time').value;
         const endTime = document.getElementById('tl-end').value;
@@ -310,6 +315,7 @@ initProtectedPage({
           orderIndex: existingItem ? existingItem.orderIndex : items.length,
           completed: existingItem ? Boolean(existingItem.completed) : false
         };
+        setButtonLoading(saveBtn, true, 'Saving...');
         try {
           if (id) {
             await apiRequest(`${apiBase}/${encodeURIComponent(id)}`, { method: 'PUT', body: payload });
@@ -320,16 +326,18 @@ initProtectedPage({
           }
           closeModal();
           await loadTimeline();
-          render();
+          renderTimelineSection();
         } catch (err) {
           showToast(err.message, 'error');
+        } finally {
+          setButtonLoading(saveBtn, false);
         }
       };
-
-      renderIcons();
     }
 
     await loadTimeline();
-    render();
+    renderShell();
+    renderTimelineSection();
   }
 });
+

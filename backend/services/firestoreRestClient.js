@@ -102,6 +102,35 @@ function decodeDocument(doc) {
   return out;
 }
 
+function assertSafePathSegment(segment, label = 'segment') {
+  if (!segment || typeof segment !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(segment)) {
+    const err = new Error(`Invalid Firestore path ${label}.`);
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+export function assertSafeFirestorePath(docPath) {
+  if (typeof docPath !== 'string' || !docPath) {
+    const err = new Error('Firestore document path is required.');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (docPath.includes('..') || docPath.includes('?') || docPath.includes('#')) {
+    const err = new Error('Unsafe Firestore path detected.');
+    err.statusCode = 400;
+    throw err;
+  }
+  const segments = docPath.split('/');
+  if (segments.length === 0 || segments.some((s) => !s)) {
+    const err = new Error('Malformed Firestore document path.');
+    err.statusCode = 400;
+    throw err;
+  }
+  segments.forEach((seg, idx) => assertSafePathSegment(seg, `segment[${idx}]`));
+  return docPath;
+}
+
 async function firestoreFetch(url, idToken, options = {}) {
   if (!idToken) {
     const err = new Error('Authentication token missing for database request.');
@@ -115,7 +144,8 @@ async function firestoreFetch(url, idToken, options = {}) {
       Authorization: `Bearer ${idToken}`,
       ...(options.body ? { 'Content-Type': 'application/json' } : {})
     },
-    body: options.body ? JSON.stringify(options.body) : undefined
+    body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: AbortSignal.timeout(15000)
   });
 
   const data = await res.json().catch(() => ({}));
@@ -134,8 +164,9 @@ export function generateFirestoreDocId() {
 }
 
 export async function getDocRest(docPath, idToken) {
+  const safePath = assertSafeFirestorePath(docPath);
   try {
-    const doc = await firestoreFetch(`${getDocumentsRootUrl()}/${docPath}`, idToken);
+    const doc = await firestoreFetch(`${getDocumentsRootUrl()}/${safePath}`, idToken);
     return decodeDocument(doc);
   } catch (err) {
     if (err.statusCode === 404) return null;
@@ -144,8 +175,10 @@ export async function getDocRest(docPath, idToken) {
 }
 
 export async function listCollectionRest(parentDocPath, collectionId, uid, idToken) {
-  const baseUrl = parentDocPath
-    ? `${getDocumentsRootUrl()}/${parentDocPath}:runQuery`
+  assertSafePathSegment(collectionId, 'collectionId');
+  const safeParent = parentDocPath ? assertSafeFirestorePath(parentDocPath) : '';
+  const baseUrl = safeParent
+    ? `${getDocumentsRootUrl()}/${safeParent}:runQuery`
     : `${getDocumentsRootUrl()}:runQuery`;
 
   const rows = await firestoreFetch(baseUrl, idToken, {

@@ -17,7 +17,8 @@ export default [
       'frontend/js/**/*.js',
       'frontend/config/**/*.js',
       'frontend/vite.config.mjs',
-      'backend/**/*.js'
+      'backend/**/*.js',
+      'tests/**/*.js'
     ],
     languageOptions: {
       ecmaVersion: 2022,
@@ -40,6 +41,7 @@ export default [
         Intl: 'readonly',
         crypto: 'readonly',
         AbortController: 'readonly',
+        AbortSignal: 'readonly',
         CustomEvent: 'readonly',
         Blob: 'readonly',
         structuredClone: 'readonly',

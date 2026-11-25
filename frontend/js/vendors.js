@@ -1,10 +1,12 @@
 import { apiRequest, callAiEndpoint } from './api.js';
 import {
+  closeModalElement,
   copyToClipboard,
   escapeHtml,
   formatCurrency,
   initProtectedPage,
   openConfirmModal,
+  openModalElement,
   renderIcons,
   renderNoEventState,
   setButtonLoading,
@@ -39,9 +41,146 @@ initProtectedPage({
       vendors = data.vendors || [];
     }
 
-    function render() {
-      const filtered = categoryFilter === 'All' ? vendors : vendors.filter((v) => v.category === categoryFilter);
+    function openVendorModal(v = null) {
+      const modal = document.getElementById('vendor-modal');
+      if (!modal) return;
+      document.getElementById('vendor-modal-title').textContent = v ? 'Edit Vendor' : 'Add Vendor';
+      document.getElementById('vendor-id').value = v?.id || '';
+      document.getElementById('vendor-name').value = v?.name || '';
+      document.getElementById('vendor-cat').value = v?.category || 'Venue';
+      document.getElementById('vendor-status').value = v?.status || 'shortlisted';
+      document.getElementById('vendor-contact').value = v?.contactInfo || '';
+      document.getElementById('vendor-est').value = v?.estimatedCost ?? 0;
+      document.getElementById('vendor-act').value = v?.actualCost ?? 0;
+      document.getElementById('vendor-pay').value = v?.paymentStatus || 'unpaid';
+      document.getElementById('vendor-date').value = v?.bookingDate || '';
+      document.getElementById('vendor-notes').value = v?.notes || '';
+      openModalElement(modal, '#vendor-name');
+    }
 
+    function renderVendorTable() {
+      const slot = document.getElementById('vendor-table-slot');
+      const heading = document.getElementById('tracked-vendors-heading');
+      if (!slot) return;
+
+      const filtered = categoryFilter === 'All' ? vendors : vendors.filter((v) => v.category === categoryFilter);
+      if (heading) {
+        heading.textContent = `Tracked Vendors (${filtered.length})`;
+      }
+
+      slot.innerHTML =
+        filtered.length === 0
+          ? `<div class="empty-state">
+              <p class="text-muted-ivory">No vendors added yet. Add vendors you are researching or booking.</p>
+              <button type="button" id="empty-add-vendor" class="btn btn-ivory-primary">Add First Vendor</button>
+            </div>`
+          : `<div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Vendor</th>
+                    <th>Category</th>
+                    <th>Status</th>
+                    <th>Contact</th>
+                    <th class="num-col">Estimated</th>
+                    <th class="num-col">Actual</th>
+                    <th>Payment</th>
+                    <th>Booking Date</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${filtered
+                    .map(
+                      (v) => `
+                      <tr>
+                        <td>
+                          <strong>${escapeHtml(v.name)}</strong>
+                          ${v.notes ? `<div class="text-muted-ivory" style="font-size:12px;">${escapeHtml(v.notes)}</div>` : ''}
+                        </td>
+                        <td>${escapeHtml(v.category)}</td>
+                        <td style="text-transform:capitalize;">${escapeHtml(v.status)}</td>
+                        <td class="text-muted-ivory" style="font-size:12.5px;">${escapeHtml(v.contactInfo || '—')}</td>
+                        <td class="num-col">${escapeHtml(formatCurrency(v.estimatedCost, activeEvent.currency))}</td>
+                        <td class="num-col">${escapeHtml(formatCurrency(v.actualCost, activeEvent.currency))}</td>
+                        <td style="text-transform:capitalize;">${escapeHtml(v.paymentStatus.replace('_', ' '))}</td>
+                        <td class="tabular-nums">${escapeHtml(v.bookingDate || '—')}</td>
+                        <td style="white-space:nowrap;">
+                          <button type="button" class="btn btn-sm btn-ivory-outline" data-link-budget="${escapeHtml(v.id)}">Sync to Budget</button>
+                          <button type="button" class="btn btn-sm btn-ivory-outline" data-edit-vendor="${escapeHtml(v.id)}">Edit</button>
+                          <button type="button" class="btn btn-sm btn-danger-ivory" data-del-vendor="${escapeHtml(v.id)}">Delete</button>
+                        </td>
+                      </tr>`
+                    )
+                    .join('')}
+                </tbody>
+              </table>
+            </div>`;
+
+      slot.querySelector('#empty-add-vendor')?.addEventListener('click', () => openVendorModal(null));
+      slot.querySelectorAll('[data-edit-vendor]').forEach((b) => {
+        b.onclick = () => openVendorModal(vendors.find((x) => x.id === b.dataset.editVendor));
+      });
+      slot.querySelectorAll('[data-del-vendor]').forEach((b) => {
+        b.onclick = () => {
+          const v = vendors.find((x) => x.id === b.dataset.delVendor);
+          openConfirmModal({
+            title: 'Delete Vendor?',
+            message: `Remove "${v?.name}" from your vendor directory?`,
+            confirmLabel: 'Delete',
+            onConfirm: async () => {
+              try {
+                await apiRequest(`${apiBase}/${encodeURIComponent(v.id)}`, { method: 'DELETE' });
+                await loadVendors();
+                renderVendorTable();
+                showToast('Vendor deleted.', 'success');
+              } catch (err) {
+                showToast(err.message, 'error');
+              }
+            }
+          });
+        };
+      });
+      slot.querySelectorAll('[data-link-budget]').forEach((b) => {
+        b.onclick = async () => {
+          const v = vendors.find((x) => x.id === b.dataset.linkBudget);
+          if (!v) return;
+          const budgetCategoryMap = {
+            Makeup: 'Clothing',
+            Music: 'Entertainment'
+          };
+          const mappedCat =
+            budgetCategoryMap[v.category] ||
+            (['Venue', 'Catering', 'Decoration', 'Photography', 'Videography', 'Entertainment', 'Transportation', 'Invitations', 'Accommodation'].includes(v.category)
+              ? v.category
+              : 'Miscellaneous');
+          setButtonLoading(b, true, 'Syncing...');
+          try {
+            await apiRequest(expensesApi, {
+              method: 'POST',
+              body: {
+                title: `${v.name} (${v.category})`,
+                category: mappedCat,
+                vendorId: v.id,
+                vendorName: v.name,
+                estimatedCost: Math.max(0, Number(v.estimatedCost) || 0),
+                actualCost: Math.max(0, Number(v.actualCost) || 0),
+                paymentStatus: v.paymentStatus === 'deposit_paid' ? 'partial' : v.paymentStatus === 'paid' ? 'paid' : 'unpaid',
+                expenseDate: v.bookingDate || '',
+                notes: v.notes || ''
+              }
+            });
+            showToast(`Synced "${v.name}" to Budget Planner.`, 'success');
+          } catch (err) {
+            showToast(err.message, 'error');
+          } finally {
+            setButtonLoading(b, false);
+          }
+        };
+      });
+    }
+
+    function render() {
       root.innerHTML = `
         <section class="surface-forest panel-pad" style="margin-bottom:20px;">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
@@ -61,66 +200,18 @@ initProtectedPage({
         <section class="surface-ivory panel-pad">
           <div class="panel-head">
             <div>
-              <h2 style="font-size:24px;">Tracked Vendors (${filtered.length})</h2>
+              <h2 id="tracked-vendors-heading" style="font-size:24px;">Tracked Vendors</h2>
               <p class="text-muted-ivory" style="font-size:13px;">Sync any vendor directly to your Budget Ledger with one click.</p>
             </div>
-            <select id="vendor-cat-filter" class="field-select" style="width:auto;">
+            <select id="vendor-cat-filter" aria-label="Filter vendors by category" class="field-select" style="width:auto;">
               <option value="All">All Categories</option>
               ${VENDOR_CATEGORIES.map((c) => `<option value="${c}" ${categoryFilter === c ? 'selected' : ''}>${c}</option>`).join('')}
             </select>
           </div>
-          ${
-            filtered.length === 0
-              ? `<div class="empty-state">
-                  <p class="text-muted-ivory">No vendors added yet. Add vendors you are researching or booking.</p>
-                  <button type="button" id="empty-add-vendor" class="btn btn-ivory-primary">Add First Vendor</button>
-                </div>`
-              : `<div class="data-table-wrap">
-                  <table class="data-table">
-                    <thead>
-                      <tr>
-                        <th>Vendor</th>
-                        <th>Category</th>
-                        <th>Status</th>
-                        <th>Contact</th>
-                        <th class="num-col">Estimated</th>
-                        <th class="num-col">Actual</th>
-                        <th>Payment</th>
-                        <th>Booking Date</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${filtered
-                        .map(
-                          (v) => `
-                          <tr>
-                            <td>
-                              <strong>${escapeHtml(v.name)}</strong>
-                              ${v.notes ? `<div class="text-muted-ivory" style="font-size:12px;">${escapeHtml(v.notes)}</div>` : ''}
-                            </td>
-                            <td>${escapeHtml(v.category)}</td>
-                            <td style="text-transform:capitalize;">${escapeHtml(v.status)}</td>
-                            <td class="text-muted-ivory" style="font-size:12.5px;">${escapeHtml(v.contactInfo || '—')}</td>
-                            <td class="num-col">${escapeHtml(formatCurrency(v.estimatedCost, activeEvent.currency))}</td>
-                            <td class="num-col">${escapeHtml(formatCurrency(v.actualCost, activeEvent.currency))}</td>
-                            <td style="text-transform:capitalize;">${escapeHtml(v.paymentStatus.replace('_', ' '))}</td>
-                            <td class="tabular-nums">${escapeHtml(v.bookingDate || '—')}</td>
-                            <td style="white-space:nowrap;">
-                              <button type="button" class="btn btn-sm btn-ivory-outline" data-link-budget="${escapeHtml(v.id)}">Sync to Budget</button>
-                              <button type="button" class="btn btn-sm btn-ivory-outline" data-edit-vendor="${escapeHtml(v.id)}">Edit</button>
-                              <button type="button" class="btn btn-sm btn-danger-ivory" data-del-vendor="${escapeHtml(v.id)}">Delete</button>
-                            </td>
-                          </tr>`
-                        )
-                        .join('')}
-                    </tbody>
-                  </table>
-                </div>`
-          }
+          <div id="vendor-table-slot"></div>
         </section>
 
-        <div id="vendor-modal" class="modal-backdrop">
+        <div id="vendor-modal" class="modal-backdrop" aria-hidden="true">
           <div class="modal-panel">
             <div class="modal-header">
               <h3 id="vendor-modal-title" style="font-size:24px;">Add Vendor</h3>
@@ -184,101 +275,29 @@ initProtectedPage({
               </div>
               <div class="modal-footer">
                 <button type="button" class="btn btn-ivory-outline" id="cancel-vendor-modal">Cancel</button>
-                <button type="submit" class="btn btn-ivory-primary">Save Vendor</button>
+                <button type="submit" id="save-vendor-btn" class="btn btn-ivory-primary">Save Vendor</button>
               </div>
             </form>
           </div>
         </div>
       `;
 
-      const modal = document.getElementById('vendor-modal');
-      const openModal = (v = null) => {
-        document.getElementById('vendor-modal-title').textContent = v ? 'Edit Vendor' : 'Add Vendor';
-        document.getElementById('vendor-id').value = v?.id || '';
-        document.getElementById('vendor-name').value = v?.name || '';
-        document.getElementById('vendor-cat').value = v?.category || 'Venue';
-        document.getElementById('vendor-status').value = v?.status || 'shortlisted';
-        document.getElementById('vendor-contact').value = v?.contactInfo || '';
-        document.getElementById('vendor-est').value = v?.estimatedCost ?? 0;
-        document.getElementById('vendor-act').value = v?.actualCost ?? 0;
-        document.getElementById('vendor-pay').value = v?.paymentStatus || 'unpaid';
-        document.getElementById('vendor-date').value = v?.bookingDate || '';
-        document.getElementById('vendor-notes').value = v?.notes || '';
-        modal.classList.add('open');
-      };
-      const closeModal = () => modal.classList.remove('open');
+      renderVendorTable();
 
-      document.getElementById('open-add-vendor').onclick = () => openModal(null);
-      document.getElementById('empty-add-vendor')?.addEventListener('click', () => openModal(null));
+      const modal = document.getElementById('vendor-modal');
+      const closeModal = () => closeModalElement(modal);
+
+      document.getElementById('open-add-vendor').onclick = () => openVendorModal(null);
       document.getElementById('close-vendor-modal').onclick = closeModal;
       document.getElementById('cancel-vendor-modal').onclick = closeModal;
       document.getElementById('vendor-cat-filter').onchange = (e) => {
         categoryFilter = e.target.value;
-        render();
+        renderVendorTable();
       };
-
-      root.querySelectorAll('[data-edit-vendor]').forEach((b) => {
-        b.onclick = () => openModal(vendors.find((x) => x.id === b.dataset.editVendor));
-      });
-
-      root.querySelectorAll('[data-del-vendor]').forEach((b) => {
-        b.onclick = () => {
-          const v = vendors.find((x) => x.id === b.dataset.delVendor);
-          openConfirmModal({
-            title: 'Delete Vendor?',
-            message: `Remove "${v?.name}" from your vendor directory?`,
-            confirmLabel: 'Delete',
-            onConfirm: async () => {
-              try {
-                await apiRequest(`${apiBase}/${encodeURIComponent(v.id)}`, { method: 'DELETE' });
-                await loadVendors();
-                render();
-                showToast('Vendor deleted.', 'success');
-              } catch (err) {
-                showToast(err.message, 'error');
-              }
-            }
-          });
-        };
-      });
-
-      root.querySelectorAll('[data-link-budget]').forEach((b) => {
-        b.onclick = async () => {
-          const v = vendors.find((x) => x.id === b.dataset.linkBudget);
-          if (!v) return;
-          const budgetCategoryMap = {
-            Makeup: 'Clothing',
-            Music: 'Entertainment'
-          };
-          const mappedCat =
-            budgetCategoryMap[v.category] ||
-            (['Venue', 'Catering', 'Decoration', 'Photography', 'Videography', 'Entertainment', 'Transportation', 'Invitations', 'Accommodation'].includes(v.category)
-              ? v.category
-              : 'Miscellaneous');
-          try {
-            await apiRequest(expensesApi, {
-              method: 'POST',
-              body: {
-                title: `${v.name} (${v.category})`,
-                category: mappedCat,
-                vendorId: v.id,
-                vendorName: v.name,
-                estimatedCost: Math.max(0, Number(v.estimatedCost) || 0),
-                actualCost: Math.max(0, Number(v.actualCost) || 0),
-                paymentStatus: v.paymentStatus === 'deposit_paid' ? 'partial' : v.paymentStatus === 'paid' ? 'paid' : 'unpaid',
-                expenseDate: v.bookingDate || '',
-                notes: v.notes || ''
-              }
-            });
-            showToast(`Synced "${v.name}" to Budget Planner.`, 'success');
-          } catch (err) {
-            showToast(err.message, 'error');
-          }
-        };
-      });
 
       document.getElementById('vendor-form').onsubmit = async (e) => {
         e.preventDefault();
+        const saveBtn = document.getElementById('save-vendor-btn');
         const id = document.getElementById('vendor-id').value;
         const payload = {
           name: document.getElementById('vendor-name').value.trim(),
@@ -291,6 +310,7 @@ initProtectedPage({
           bookingDate: document.getElementById('vendor-date').value,
           notes: document.getElementById('vendor-notes').value.trim()
         };
+        setButtonLoading(saveBtn, true, 'Saving...');
         try {
           if (id) {
             await apiRequest(`${apiBase}/${encodeURIComponent(id)}`, { method: 'PUT', body: payload });
@@ -301,9 +321,11 @@ initProtectedPage({
           }
           closeModal();
           await loadVendors();
-          render();
+          renderVendorTable();
         } catch (err) {
           showToast(err.message, 'error');
+        } finally {
+          setButtonLoading(saveBtn, false);
         }
       };
 
@@ -323,7 +345,7 @@ initProtectedPage({
               <p class="text-muted-dark" style="font-size:13px;">Generate personalized emails, WhatsApp inquiries, and follow-ups using your event context.</p>
             </div>
           </div>
-          <form id="vendor-inquiry-form" style="display:grid;grid-template-columns:220px 1fr auto;gap:12px;align-items:end;">
+          <form id="vendor-inquiry-form" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;align-items:end;">
             <div class="field-group">
               <label class="field-label" for="inq-cat">Vendor Category</label>
               <select id="inq-cat" class="field-select field-select-dark">

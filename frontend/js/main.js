@@ -1,7 +1,16 @@
 import { signOut } from 'firebase/auth';
 import { createIcons, icons } from 'lucide';
 import { auth, isFirebaseConfigReady, waitForAuthReady } from '../config/firebaseConfig.js';
-import { apiRequest } from './api.js';
+import { apiRequest, clearApiCache } from './api.js';
+import {
+  escapeHtml,
+  formatCurrency,
+  formatDate,
+  getDaysUntil,
+  sanitizeHexColor
+} from './utils.js';
+
+export { escapeHtml, formatCurrency, formatDate, getDaysUntil, sanitizeHexColor };
 
 export function renderIcons() {
   createIcons({ icons });
@@ -53,49 +62,6 @@ export function setButtonLoading(btn, loading, loadingLabel = '') {
   }
 }
 
-export function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-export function formatCurrency(amount, currency = 'USD') {
-  const num = Number(amount) || 0;
-  try {
-    return new Intl.NumberFormat(currency === 'INR' ? 'en-IN' : 'en-US', {
-      style: 'currency',
-      currency: currency || 'USD',
-      maximumFractionDigits: 0
-    }).format(num);
-  } catch {
-    return `${currency} ${num.toLocaleString()}`;
-  }
-}
-
-export function formatDate(dateStr) {
-  if (!dateStr) return 'Date TBD';
-  const parsed = new Date(`${dateStr}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) return dateStr;
-  return parsed.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
-  });
-}
-
-export function getDaysUntil(dateStr) {
-  if (!dateStr) return null;
-  const target = new Date(`${dateStr}T00:00:00`);
-  if (Number.isNaN(target.getTime())) return null;
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  return Math.round((target - today) / (1000 * 60 * 60 * 24));
-}
-
 export function showToast(message, type = 'info') {
   let region = document.getElementById('toast-region');
   if (!region) {
@@ -107,6 +73,7 @@ export function showToast(message, type = 'info') {
   }
   const toast = document.createElement('div');
   toast.className = `toast ${type === 'error' ? 'toast-error' : type === 'success' ? 'toast-success' : ''}`;
+  toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
   toast.innerHTML = `
     <span>${escapeHtml(message)}</span>
     <button type="button" class="btn btn-sm btn-secondary" style="min-height:28px;padding:4px 10px;" aria-label="Dismiss notification">Close</button>
@@ -124,6 +91,68 @@ export async function copyToClipboard(text, label = 'Copied to clipboard') {
     showToast(label, 'success');
   } catch {
     showToast('Unable to copy automatically. Please select and copy manually.', 'error');
+  }
+}
+
+const modalReturnFocus = new WeakMap();
+const modalKeyHandlers = new WeakMap();
+
+export function closeModalElement(modalEl) {
+  if (!modalEl) return;
+  modalEl.classList.remove('open');
+  modalEl.setAttribute('aria-hidden', 'true');
+  const handler = modalKeyHandlers.get(modalEl);
+  if (handler) {
+    document.removeEventListener('keydown', handler);
+    modalKeyHandlers.delete(modalEl);
+  }
+  const prevTrigger = modalReturnFocus.get(modalEl);
+  modalReturnFocus.delete(modalEl);
+  if (prevTrigger && typeof prevTrigger.focus === 'function' && prevTrigger.isConnected) {
+    prevTrigger.focus();
+  }
+}
+
+export function openModalElement(modalEl, focusSelector = 'input:not([type="hidden"]), select, textarea, button') {
+  if (!modalEl) return;
+  modalReturnFocus.set(modalEl, document.activeElement);
+
+  const panel = modalEl.querySelector('.modal-panel');
+  if (panel) {
+    if (!panel.getAttribute('role')) panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    const heading = panel.querySelector('h2, h3');
+    if (heading) {
+      if (!heading.id) heading.id = `modal-title-${Math.random().toString(36).slice(2, 8)}`;
+      panel.setAttribute('aria-labelledby', heading.id);
+    }
+  }
+
+  modalEl.classList.add('open');
+  modalEl.setAttribute('aria-hidden', 'false');
+
+  modalEl.onclick = (e) => {
+    if (e.target === modalEl) {
+      closeModalElement(modalEl);
+    }
+  };
+
+  const prevHandler = modalKeyHandlers.get(modalEl);
+  if (prevHandler) {
+    document.removeEventListener('keydown', prevHandler);
+  }
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape' && modalEl.classList.contains('open')) {
+      e.preventDefault();
+      closeModalElement(modalEl);
+    }
+  };
+  modalKeyHandlers.set(modalEl, onKeyDown);
+  document.addEventListener('keydown', onKeyDown);
+
+  const targetFocus = modalEl.querySelector(focusSelector) || panel;
+  if (targetFocus && typeof targetFocus.focus === 'function') {
+    setTimeout(() => targetFocus.focus(), 10);
   }
 }
 
@@ -155,20 +184,20 @@ export function openConfirmModal({ title, message, confirmLabel = 'Confirm', dan
   okBtn.textContent = confirmLabel;
   okBtn.className = `btn ${danger ? 'btn-danger-ivory' : 'btn-ivory-primary'}`;
 
-  const close = () => backdrop.classList.remove('open');
+  const close = () => closeModalElement(backdrop);
   backdrop.querySelectorAll('[data-close-confirm]').forEach((btn) => {
     btn.onclick = close;
   });
   okBtn.onclick = async () => {
-    okBtn.disabled = true;
+    setButtonLoading(okBtn, true, 'Working...');
     try {
       await onConfirm();
       close();
     } finally {
-      okBtn.disabled = false;
+      setButtonLoading(okBtn, false);
     }
   };
-  backdrop.classList.add('open');
+  openModalElement(backdrop, '[data-close-confirm]');
 }
 
 export function getStoredEventId() {
@@ -190,10 +219,12 @@ export function setStoredEventId(eventId) {
 }
 
 export async function signOutUser() {
+  clearApiCache();
   if (auth) {
     await signOut(auth).catch(() => {});
   }
   localStorage.removeItem('avenora_active_event_id');
+  localStorage.removeItem('avenora_wizard_draft_v1');
   window.location.href = '/login.html';
 }
 
@@ -223,8 +254,8 @@ export function renderWorkspaceShell({ activeKey, pageTitle, events = [], active
   sidebar.innerHTML = `
     <div class="sidebar-brand">
       <a href="/dashboard.html" class="brand-wordmark" style="font-size:21px;">AVENORA <span>AI</span></a>
-      <button type="button" class="btn btn-sm btn-secondary mobile-menu-btn" id="close-sidebar-btn" aria-label="Close menu">
-        <i data-lucide="x"></i>
+      <button type="button" class="btn btn-sm btn-secondary mobile-menu-btn" id="close-sidebar-btn" aria-label="Close navigation menu">
+        <i data-lucide="x" aria-hidden="true"></i>
       </button>
     </div>
     <div class="sidebar-event-switcher">
@@ -254,9 +285,10 @@ export function renderWorkspaceShell({ activeKey, pageTitle, events = [], active
                 if (activeEvent && !item.href.includes('?')) {
                   targetHref = `${item.href}${eventQuery}`;
                 }
+                const isCurrent = activeKey === item.key;
                 return `
-                  <a href="${targetHref}" class="sidebar-link ${activeKey === item.key ? 'active' : ''}">
-                    <i data-lucide="${item.icon}"></i>
+                  <a href="${targetHref}" class="sidebar-link ${isCurrent ? 'active' : ''}" ${isCurrent ? 'aria-current="page"' : ''}>
+                    <i data-lucide="${item.icon}" aria-hidden="true"></i>
                     <span>${item.label}</span>
                   </a>
                 `;
@@ -267,11 +299,11 @@ export function renderWorkspaceShell({ activeKey, pageTitle, events = [], active
         .join('')}
     </nav>
     <div class="sidebar-footer">
-      <div style="font-size:12.5px;color:rgba(245,243,237,0.72);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+      <div style="font-size:12.5px;color:rgba(245,243,237,0.78);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
         ${escapeHtml(userProfile?.displayName || 'Planner')} · ${escapeHtml(userProfile?.preferredCurrency || 'USD')}
       </div>
       <button type="button" id="sidebar-logout-btn" class="btn btn-sm btn-secondary" style="width:100%;justify-content:flex-start;">
-        <i data-lucide="log-out"></i>
+        <i data-lucide="log-out" aria-hidden="true"></i>
         <span>Sign Out</span>
       </button>
     </div>
@@ -279,8 +311,8 @@ export function renderWorkspaceShell({ activeKey, pageTitle, events = [], active
 
   topbar.innerHTML = `
     <div class="topbar-left">
-      <button type="button" class="btn btn-sm btn-secondary mobile-menu-btn" id="open-sidebar-btn" aria-label="Open menu">
-        <i data-lucide="menu"></i>
+      <button type="button" class="btn btn-sm btn-secondary mobile-menu-btn" id="open-sidebar-btn" aria-label="Open navigation menu" aria-expanded="false" aria-controls="workspace-sidebar">
+        <i data-lucide="menu" aria-hidden="true"></i>
       </button>
       <div class="topbar-breadcrumb">
         <span>AVENORA AI</span>
@@ -291,7 +323,7 @@ export function renderWorkspaceShell({ activeKey, pageTitle, events = [], active
     </div>
     <div class="topbar-actions">
       <a href="/event.html?mode=create" class="btn btn-sm btn-primary">
-        <i data-lucide="plus"></i>
+        <i data-lucide="plus" aria-hidden="true"></i>
         <span>New Event</span>
       </a>
     </div>
@@ -305,14 +337,26 @@ export function renderWorkspaceShell({ activeKey, pageTitle, events = [], active
     document.body.appendChild(backdrop);
   }
 
+  const openMenuBtn = topbar.querySelector('#open-sidebar-btn');
   const toggleDrawer = (open) => {
     sidebar.classList.toggle('open', open);
     backdrop.classList.toggle('open', open);
+    openMenuBtn?.setAttribute('aria-expanded', String(open));
+    if (open) {
+      sidebar.querySelector('#close-sidebar-btn')?.focus();
+    } else if (openMenuBtn && document.activeElement && sidebar.contains(document.activeElement)) {
+      openMenuBtn.focus();
+    }
   };
 
-  topbar.querySelector('#open-sidebar-btn')?.addEventListener('click', () => toggleDrawer(true));
+  openMenuBtn?.addEventListener('click', () => toggleDrawer(true));
   sidebar.querySelector('#close-sidebar-btn')?.addEventListener('click', () => toggleDrawer(false));
   backdrop.onclick = () => toggleDrawer(false);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && sidebar.classList.contains('open')) {
+      toggleDrawer(false);
+    }
+  });
 
   sidebar.querySelector('#sidebar-logout-btn')?.addEventListener('click', () => {
     signOutUser();
@@ -417,7 +461,7 @@ export function renderNoEventState(container, heading = 'No Active Event Yet') {
   container.innerHTML = `
     <div class="surface-ivory panel-pad">
       <div class="empty-state">
-        <i data-lucide="calendar-plus" style="width:36px;height:36px;color:var(--color-forest-rich);"></i>
+        <i data-lucide="calendar-plus" aria-hidden="true" style="width:36px;height:36px;color:var(--color-forest-rich);"></i>
         <h2 style="font-size:28px;">${escapeHtml(heading)}</h2>
         <p class="text-muted-ivory" style="max-width:48ch;">
           Create your first event with the 9-step AVENORA AI Creator to unlock personalized blueprints, budgets, tasks, guest rosters, and Theme Studio concepts.

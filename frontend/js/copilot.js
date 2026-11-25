@@ -52,11 +52,153 @@ initProtectedPage({
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
-    function render() {
+    function renderConversationsList() {
+      const wrap = document.getElementById('copilot-conversations');
+      if (!wrap) return;
       const convIds = [...new Set(allMessages.map((m) => m.conversationId).filter(Boolean))];
       if (!convIds.includes(conversationId)) convIds.push(conversationId);
+      if (convIds.length <= 1) {
+        wrap.innerHTML = '';
+        return;
+      }
+      wrap.innerHTML = `
+        <div style="font-size:12px;font-weight:600;color:var(--color-sage);margin-bottom:8px;">Conversations</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${convIds
+            .slice(-5)
+            .reverse()
+            .map((cid, idx) => {
+              const firstMsg = allMessages.find((m) => m.conversationId === cid);
+              return `<button type="button" class="btn btn-sm ${cid === conversationId ? 'btn-primary' : 'btn-secondary'}" style="justify-content:flex-start;overflow:hidden;text-overflow:ellipsis;" data-switch-conv="${escapeHtml(cid)}">${escapeHtml(firstMsg?.content?.slice(0, 28) || `Session ${idx + 1}`)}</button>`;
+            })
+            .join('')}
+        </div>
+      `;
+      wrap.querySelectorAll('[data-switch-conv]').forEach((btn) => {
+        btn.onclick = () => {
+          conversationId = btn.dataset.switchConv;
+          renderMessages();
+          renderConversationsList();
+          document.getElementById('copilot-input')?.focus();
+        };
+      });
+    }
+
+    function renderMessages() {
+      const scrollBox = document.getElementById('chat-scroll-box');
+      if (!scrollBox) return;
       const activeMessages = allMessages.filter((m) => m.conversationId === conversationId);
 
+      scrollBox.innerHTML = `
+        ${
+          activeMessages.length === 0
+            ? `<div class="empty-state" style="margin:auto;max-width:480px;">
+                <h2 style="font-size:28px;">AVENORA AI Co-Pilot</h2>
+                <p class="text-muted-ivory">Your Co-Pilot already knows your event date, guest count, budget, tasks, guests, vendors, timeline, and theme. Ask anything below.</p>
+              </div>`
+            : activeMessages
+                .map(
+                  (msg, idx) => `
+                  <div class="chat-bubble ${msg.role}">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:6px;font-size:11.5px;opacity:0.7;">
+                      <strong>${msg.role === 'assistant' ? 'AVENORA AI' : 'You'}</strong>
+                      <span>${escapeHtml(formatTime(msg.createdAt))}</span>
+                    </div>
+                    <div style="white-space:pre-wrap;">${escapeHtml(msg.content)}</div>
+                    ${
+                      msg.role === 'assistant'
+                        ? `<div style="margin-top:8px;"><button type="button" class="btn btn-sm btn-ivory-outline" style="min-height:28px;padding:4px 10px;font-size:11.5px;" data-copy-msg="${idx}">Copy Response</button></div>`
+                        : ''
+                    }
+                  </div>`
+                )
+                .join('')
+        }
+        ${
+          isThinking
+            ? `<div class="chat-bubble assistant">
+                <div style="display:flex;align-items:center;gap:12px;">
+                  <div class="typing-bars" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+                  <span class="text-muted-ivory" style="font-size:13px;">AVENORA AI is analyzing your event workspace...</span>
+                </div>
+              </div>`
+            : ''
+        }
+      `;
+
+      scrollBox.querySelectorAll('[data-copy-msg]').forEach((btn) => {
+        btn.onclick = () => {
+          const msg = activeMessages[Number(btn.dataset.copyMsg)];
+          if (msg) copyToClipboard(msg.content, 'Co-Pilot response copied.');
+        };
+      });
+
+      const sendBtn = document.getElementById('copilot-send');
+      if (sendBtn) {
+        sendBtn.disabled = isThinking;
+        sendBtn.classList.toggle('is-loading', isThinking);
+        sendBtn.innerHTML = isThinking
+          ? '<span class="btn-spinner" aria-hidden="true"></span><span>Thinking...</span>'
+          : 'Send';
+      }
+
+      scrollBox.scrollTop = scrollBox.scrollHeight;
+    }
+
+    async function sendMessage(text) {
+      const clean = text.trim();
+      if (!clean || isThinking) return;
+
+      const userTurn = {
+        role: 'user',
+        content: clean.slice(0, 11500),
+        conversationId,
+        createdAt: new Date().toISOString()
+      };
+      allMessages.push(userTurn);
+      isThinking = true;
+      renderMessages();
+      renderConversationsList();
+
+      try {
+        await apiRequest(chatsApi, {
+          method: 'POST',
+          body: { role: 'user', content: userTurn.content, conversationId }
+        });
+
+        const history = allMessages
+          .filter((m) => m.conversationId === conversationId)
+          .slice(-12)
+          .map((m) => ({ role: m.role, content: m.content }));
+
+        const res = await callAiEndpoint('/api/ai/chat', {
+          eventId: activeEvent.id,
+          message: clean,
+          history
+        });
+
+        const replyText = (String(res.reply || '').trim() || 'I could not formulate a response. Please try again.').slice(0, 11900);
+        const savedAssistant = await apiRequest(chatsApi, {
+          method: 'POST',
+          body: { role: 'assistant', content: replyText, conversationId }
+        });
+        allMessages.push(savedAssistant.turn || {
+          role: 'assistant',
+          content: replyText,
+          conversationId,
+          createdAt: new Date().toISOString()
+        });
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        isThinking = false;
+        renderMessages();
+        renderConversationsList();
+        document.getElementById('copilot-input')?.focus();
+      }
+    }
+
+    function renderShell() {
       root.innerHTML = `
         <div class="copilot-layout">
           <aside class="surface-forest panel-pad" style="display:flex;flex-direction:column;gap:18px;">
@@ -83,125 +225,20 @@ initProtectedPage({
               </div>
             </div>
 
-            ${
-              convIds.length > 1
-                ? `<div>
-                    <div style="font-size:12px;font-weight:600;color:var(--color-sage);margin-bottom:8px;">Conversations</div>
-                    <div style="display:flex;flex-direction:column;gap:6px;">
-                      ${convIds
-                        .slice(-5)
-                        .reverse()
-                        .map((cid, idx) => {
-                          const firstMsg = allMessages.find((m) => m.conversationId === cid);
-                          return `<button type="button" class="btn btn-sm ${cid === conversationId ? 'btn-primary' : 'btn-secondary'}" style="justify-content:flex-start;overflow:hidden;text-overflow:ellipsis;" data-switch-conv="${escapeHtml(cid)}">${escapeHtml(firstMsg?.content?.slice(0, 28) || `Session ${idx + 1}`)}</button>`;
-                        })
-                        .join('')}
-                    </div>
-                  </div>`
-                : ''
-            }
+            <div id="copilot-conversations"></div>
           </aside>
 
           <section class="surface-ivory chat-window">
-            <div class="chat-messages" id="chat-scroll-box">
-              ${
-                activeMessages.length === 0
-                  ? `<div class="empty-state" style="margin:auto;max-width:480px;">
-                      <h2 style="font-size:28px;">AVENORA AI Co-Pilot</h2>
-                      <p class="text-muted-ivory">Your Co-Pilot already knows your event date, guest count, budget, tasks, guests, vendors, timeline, and theme. Ask anything below.</p>
-                    </div>`
-                  : activeMessages
-                      .map(
-                        (msg, idx) => `
-                        <div class="chat-bubble ${msg.role}">
-                          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:6px;font-size:11.5px;opacity:0.7;">
-                            <strong>${msg.role === 'assistant' ? 'AVENORA AI' : 'You'}</strong>
-                            <span>${escapeHtml(formatTime(msg.createdAt))}</span>
-                          </div>
-                          <div style="white-space:pre-wrap;">${escapeHtml(msg.content)}</div>
-                          ${
-                            msg.role === 'assistant'
-                              ? `<div style="margin-top:8px;"><button type="button" class="btn btn-sm btn-ivory-outline" style="min-height:28px;padding:4px 10px;font-size:11.5px;" data-copy-msg="${idx}">Copy Response</button></div>`
-                              : ''
-                          }
-                        </div>`
-                      )
-                      .join('')
-              }
-              ${
-                isThinking
-                  ? `<div class="chat-bubble assistant">
-                      <div style="display:flex;align-items:center;gap:12px;">
-                        <div class="typing-bars" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
-                        <span class="text-muted-ivory" style="font-size:13px;">AVENORA AI is analyzing your event workspace...</span>
-                      </div>
-                    </div>`
-                  : ''
-              }
-            </div>
+            <div class="chat-messages" id="chat-scroll-box" aria-live="polite"></div>
 
             <form id="copilot-form" class="chat-composer">
+              <label class="sr-only" for="copilot-input">Message AVENORA AI Co-Pilot</label>
               <textarea id="copilot-input" class="field-textarea" style="min-height:48px;max-height:130px;flex:1;" placeholder="Ask your AI Co-Pilot about budget, schedule, vendors, or next steps..." required></textarea>
-              <button type="submit" id="copilot-send" class="btn btn-ivory-primary ${isThinking ? 'is-loading' : ''}" ${isThinking ? 'disabled' : ''}>
-                ${isThinking ? '<span class="btn-spinner" aria-hidden="true"></span><span>Thinking...</span>' : 'Send'}
-              </button>
+              <button type="submit" id="copilot-send" class="btn btn-ivory-primary">Send</button>
             </form>
           </section>
         </div>
       `;
-
-      const scrollBox = document.getElementById('chat-scroll-box');
-      if (scrollBox) scrollBox.scrollTop = scrollBox.scrollHeight;
-
-      async function sendMessage(text) {
-        const clean = text.trim();
-        if (!clean || isThinking) return;
-
-        const userTurn = {
-          role: 'user',
-          content: clean.slice(0, 11500),
-          conversationId,
-          createdAt: new Date().toISOString()
-        };
-        allMessages.push(userTurn);
-        isThinking = true;
-        render();
-
-        try {
-          await apiRequest(chatsApi, {
-            method: 'POST',
-            body: { role: 'user', content: userTurn.content, conversationId }
-          });
-
-          const history = allMessages
-            .filter((m) => m.conversationId === conversationId)
-            .slice(-12)
-            .map((m) => ({ role: m.role, content: m.content }));
-
-          const res = await callAiEndpoint('/api/ai/chat', {
-            eventId: activeEvent.id,
-            message: clean,
-            history
-          });
-
-          const replyText = (String(res.reply || '').trim() || 'I could not formulate a response. Please try again.').slice(0, 11900);
-          const savedAssistant = await apiRequest(chatsApi, {
-            method: 'POST',
-            body: { role: 'assistant', content: replyText, conversationId }
-          });
-          allMessages.push(savedAssistant.turn || {
-            role: 'assistant',
-            content: replyText,
-            conversationId,
-            createdAt: new Date().toISOString()
-          });
-        } catch (err) {
-          showToast(err.message, 'error');
-        } finally {
-          isThinking = false;
-          render();
-        }
-      }
 
       document.getElementById('copilot-form').onsubmit = (e) => {
         e.preventDefault();
@@ -220,31 +257,21 @@ initProtectedPage({
 
       document.getElementById('new-chat-btn').onclick = () => {
         conversationId = `conv_${Date.now()}`;
-        render();
+        renderMessages();
+        renderConversationsList();
+        document.getElementById('copilot-input')?.focus();
       };
 
       root.querySelectorAll('[data-prompt]').forEach((btn) => {
         btn.onclick = () => sendMessage(btn.dataset.prompt);
       });
 
-      root.querySelectorAll('[data-switch-conv]').forEach((btn) => {
-        btn.onclick = () => {
-          conversationId = btn.dataset.switchConv;
-          render();
-        };
-      });
-
-      root.querySelectorAll('[data-copy-msg]').forEach((btn) => {
-        btn.onclick = () => {
-          const msg = activeMessages[Number(btn.dataset.copyMsg)];
-          if (msg) copyToClipboard(msg.content, 'Co-Pilot response copied.');
-        };
-      });
-
+      renderConversationsList();
+      renderMessages();
       renderIcons();
     }
 
     await loadMessages();
-    render();
+    renderShell();
   }
 });

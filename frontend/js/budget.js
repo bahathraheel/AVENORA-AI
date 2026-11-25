@@ -1,10 +1,12 @@
 import Chart from 'chart.js/auto';
 import { apiRequest, callAiEndpoint } from './api.js';
 import {
+  closeModalElement,
   escapeHtml,
   formatCurrency,
   initProtectedPage,
   openConfirmModal,
+  openModalElement,
   renderIcons,
   renderNoEventState,
   setButtonLoading,
@@ -66,8 +68,14 @@ initProtectedPage({
     function renderCharts(totals) {
       const allocCanvas = document.getElementById('budget-allocation-chart');
       const compCanvas = document.getElementById('budget-comparison-chart');
-      if (allocationChartInstance) allocationChartInstance.destroy();
-      if (comparisonChartInstance) comparisonChartInstance.destroy();
+      if (allocationChartInstance) {
+        allocationChartInstance.destroy();
+        allocationChartInstance = null;
+      }
+      if (comparisonChartInstance) {
+        comparisonChartInstance.destroy();
+        comparisonChartInstance = null;
+      }
 
       if (!allocCanvas || !compCanvas || totals.byCategory.length === 0) return;
 
@@ -126,13 +134,115 @@ initProtectedPage({
       });
     }
 
-    function render() {
-      const totals = computeTotals();
-      const overBudget = totals.totalActual > totals.totalBudget;
+    function openExpenseModal(exp = null) {
+      const modal = document.getElementById('expense-modal');
+      if (!modal) return;
+      document.getElementById('exp-modal-title').textContent = exp ? 'Edit Expense' : 'Add Expense';
+      document.getElementById('exp-id').value = exp?.id || '';
+      document.getElementById('exp-title').value = exp?.title || '';
+      document.getElementById('exp-category').value = exp?.category || 'Venue';
+      document.getElementById('exp-vendor').value = exp?.vendorId || '';
+      document.getElementById('exp-est').value = exp?.estimatedCost ?? 0;
+      document.getElementById('exp-act').value = exp?.actualCost ?? 0;
+      document.getElementById('exp-status').value = exp?.paymentStatus || 'unpaid';
+      document.getElementById('exp-date').value = exp?.expenseDate || '';
+      document.getElementById('exp-notes').value = exp?.notes || '';
+      openModalElement(modal, '#exp-title');
+    }
+
+    function renderExpenseLedger() {
+      const slot = document.getElementById('expense-ledger-slot');
+      const countEl = document.getElementById('expense-ledger-count');
+      if (!slot) return;
+
       const filteredExpenses =
         activeCategoryFilter === 'All'
           ? expenses
           : expenses.filter((e) => e.category === activeCategoryFilter);
+
+      if (countEl) {
+        countEl.textContent = `Expense Ledger (${filteredExpenses.length})`;
+      }
+
+      slot.innerHTML =
+        filteredExpenses.length === 0
+          ? `<div class="empty-state">
+              <p class="text-muted-ivory">No expenses recorded in this category yet.</p>
+              <button type="button" id="empty-add-expense" class="btn btn-ivory-primary">Add First Expense</button>
+            </div>`
+          : `<div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Category</th>
+                    <th>Vendor</th>
+                    <th>Status</th>
+                    <th class="num-col">Estimated</th>
+                    <th class="num-col">Actual</th>
+                    <th>Date</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${filteredExpenses
+                    .map(
+                      (exp) => `
+                      <tr>
+                        <td>
+                          <strong>${escapeHtml(exp.title)}</strong>
+                          ${exp.notes ? `<div class="text-muted-ivory" style="font-size:12px;">${escapeHtml(exp.notes)}</div>` : ''}
+                        </td>
+                        <td>${escapeHtml(exp.category)}</td>
+                        <td class="text-muted-ivory">${escapeHtml(exp.vendorName || '—')}</td>
+                        <td>
+                          <span class="status-label ${exp.paymentStatus === 'paid' ? 'status-success' : exp.paymentStatus === 'partial' ? 'status-warning' : 'status-neutral'}" style="text-transform:capitalize;">
+                            ${escapeHtml(exp.paymentStatus)}
+                          </span>
+                        </td>
+                        <td class="num-col">${escapeHtml(formatCurrency(exp.estimatedCost, activeEvent.currency))}</td>
+                        <td class="num-col">${escapeHtml(formatCurrency(exp.actualCost, activeEvent.currency))}</td>
+                        <td class="tabular-nums">${escapeHtml(exp.expenseDate || '—')}</td>
+                        <td style="white-space:nowrap;">
+                          <button type="button" class="btn btn-sm btn-ivory-outline" data-edit-exp="${escapeHtml(exp.id)}">Edit</button>
+                          <button type="button" class="btn btn-sm btn-danger-ivory" data-del-exp="${escapeHtml(exp.id)}">Delete</button>
+                        </td>
+                      </tr>`
+                    )
+                    .join('')}
+                </tbody>
+              </table>
+            </div>`;
+
+      slot.querySelector('#empty-add-expense')?.addEventListener('click', () => openExpenseModal(null));
+      slot.querySelectorAll('[data-edit-exp]').forEach((btn) => {
+        btn.onclick = () => openExpenseModal(expenses.find((x) => x.id === btn.dataset.editExp));
+      });
+      slot.querySelectorAll('[data-del-exp]').forEach((btn) => {
+        btn.onclick = () => {
+          const target = expenses.find((x) => x.id === btn.dataset.delExp);
+          openConfirmModal({
+            title: 'Delete Expense?',
+            message: `Remove "${target?.title}" from your budget ledger?`,
+            confirmLabel: 'Delete',
+            onConfirm: async () => {
+              try {
+                await apiRequest(`${apiBase}/${encodeURIComponent(target.id)}`, { method: 'DELETE' });
+                await loadData();
+                render();
+                showToast('Expense deleted.', 'success');
+              } catch (err) {
+                showToast(err.message, 'error');
+              }
+            }
+          });
+        };
+      });
+    }
+
+    function render() {
+      const totals = computeTotals();
+      const overBudget = totals.totalActual > totals.totalBudget;
 
       root.innerHTML = `
         <section class="surface-forest panel-pad" style="margin-bottom:20px;">
@@ -150,7 +260,7 @@ initProtectedPage({
 
         ${
           overBudget
-            ? `<div class="surface-ivory panel-pad" style="margin-bottom:18px;background:#F9ECE8;border-color:rgba(184,74,57,0.35);">
+            ? `<div class="surface-ivory panel-pad" role="alert" style="margin-bottom:18px;background:#F9ECE8;border-color:rgba(184,74,57,0.35);">
                 <strong class="status-danger">Over-Budget Alert: Actual spending (${escapeHtml(formatCurrency(totals.totalActual, activeEvent.currency))}) exceeds your total budget (${escapeHtml(formatCurrency(totals.totalBudget, activeEvent.currency))}) by ${escapeHtml(formatCurrency(Math.abs(totals.remaining), activeEvent.currency))}.</strong>
               </div>`
             : ''
@@ -158,22 +268,22 @@ initProtectedPage({
 
         <section class="kpi-strip">
           <div class="surface-ivory kpi-card">
-            <div style="font-size:12.5px;color:rgba(20,37,28,0.65);">Total Budget</div>
+            <div style="font-size:12.5px;color:rgba(20,37,28,0.75);">Total Budget</div>
             <div class="kpi-value">${escapeHtml(formatCurrency(totals.totalBudget, activeEvent.currency))}</div>
           </div>
           <div class="surface-ivory kpi-card">
-            <div style="font-size:12.5px;color:rgba(20,37,28,0.65);">Allocated (Estimated)</div>
+            <div style="font-size:12.5px;color:rgba(20,37,28,0.75);">Allocated (Estimated)</div>
             <div class="kpi-value">${escapeHtml(formatCurrency(totals.totalEstimated, activeEvent.currency))}</div>
           </div>
           <div class="surface-ivory kpi-card">
-            <div style="font-size:12.5px;color:rgba(20,37,28,0.65);">Actual Spending</div>
+            <div style="font-size:12.5px;color:rgba(20,37,28,0.75);">Actual Spending</div>
             <div class="kpi-value">${escapeHtml(formatCurrency(totals.totalActual, activeEvent.currency))}</div>
             <div class="progress-track"><div class="progress-fill ${overBudget ? 'over-budget' : ''}" style="width:${Math.min(100, totals.percentSpent)}%;"></div></div>
           </div>
           <div class="surface-ivory kpi-card">
-            <div style="font-size:12.5px;color:rgba(20,37,28,0.65);">Remaining Balance</div>
+            <div style="font-size:12.5px;color:rgba(20,37,28,0.75);">Remaining Balance</div>
             <div class="kpi-value ${overBudget ? 'status-danger' : 'status-success'}">${escapeHtml(formatCurrency(totals.remaining, activeEvent.currency))}</div>
-            <div class="tabular-nums" style="font-size:12px;color:rgba(20,37,28,0.65);">${totals.percentSpent}% spent</div>
+            <div class="tabular-nums" style="font-size:12px;color:rgba(20,37,28,0.75);">${totals.percentSpent}% spent</div>
           </div>
         </section>
 
@@ -182,11 +292,11 @@ initProtectedPage({
             ? `<section class="charts-grid" style="margin-bottom:20px;">
                 <div class="surface-ivory panel-pad">
                   <h2 style="font-size:22px;margin-bottom:14px;">Budget Allocation by Category</h2>
-                  <div class="chart-box"><canvas id="budget-allocation-chart"></canvas></div>
+                  <div class="chart-box"><canvas id="budget-allocation-chart" aria-label="Budget allocation doughnut chart"></canvas></div>
                 </div>
                 <div class="surface-ivory panel-pad">
                   <h2 style="font-size:22px;margin-bottom:14px;">Estimated vs. Actual Spending</h2>
-                  <div class="chart-box"><canvas id="budget-comparison-chart"></canvas></div>
+                  <div class="chart-box"><canvas id="budget-comparison-chart" aria-label="Estimated versus actual spending bar chart"></canvas></div>
                 </div>
               </section>`
             : ''
@@ -197,67 +307,18 @@ initProtectedPage({
         <section class="surface-ivory panel-pad">
           <div class="panel-head">
             <div>
-              <h2 style="font-size:24px;">Expense Ledger (${filteredExpenses.length})</h2>
+              <h2 id="expense-ledger-count" style="font-size:24px;">Expense Ledger</h2>
               <p class="text-muted-ivory" style="font-size:13px;">Every expense can link to a tracked vendor and payment status.</p>
             </div>
-            <select id="filter-exp-cat" class="field-select" style="width:auto;min-width:190px;">
+            <select id="filter-exp-cat" aria-label="Filter expenses by category" class="field-select" style="width:auto;min-width:190px;">
               <option value="All">All Categories</option>
               ${BUDGET_CATEGORIES.map((c) => `<option value="${c}" ${activeCategoryFilter === c ? 'selected' : ''}>${c}</option>`).join('')}
             </select>
           </div>
-          ${
-            filteredExpenses.length === 0
-              ? `<div class="empty-state">
-                  <p class="text-muted-ivory">No expenses recorded in this category yet.</p>
-                  <button type="button" id="empty-add-expense" class="btn btn-ivory-primary">Add First Expense</button>
-                </div>`
-              : `<div class="data-table-wrap">
-                  <table class="data-table">
-                    <thead>
-                      <tr>
-                        <th>Item</th>
-                        <th>Category</th>
-                        <th>Vendor</th>
-                        <th>Status</th>
-                        <th class="num-col">Estimated</th>
-                        <th class="num-col">Actual</th>
-                        <th>Date</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${filteredExpenses
-                        .map(
-                          (exp) => `
-                          <tr>
-                            <td>
-                              <strong>${escapeHtml(exp.title)}</strong>
-                              ${exp.notes ? `<div class="text-muted-ivory" style="font-size:12px;">${escapeHtml(exp.notes)}</div>` : ''}
-                            </td>
-                            <td>${escapeHtml(exp.category)}</td>
-                            <td class="text-muted-ivory">${escapeHtml(exp.vendorName || '—')}</td>
-                            <td>
-                              <span class="status-label ${exp.paymentStatus === 'paid' ? 'status-success' : exp.paymentStatus === 'partial' ? 'status-warning' : 'status-neutral'}" style="text-transform:capitalize;">
-                                ${escapeHtml(exp.paymentStatus)}
-                              </span>
-                            </td>
-                            <td class="num-col">${escapeHtml(formatCurrency(exp.estimatedCost, activeEvent.currency))}</td>
-                            <td class="num-col">${escapeHtml(formatCurrency(exp.actualCost, activeEvent.currency))}</td>
-                            <td class="tabular-nums">${escapeHtml(exp.expenseDate || '—')}</td>
-                            <td style="white-space:nowrap;">
-                              <button type="button" class="btn btn-sm btn-ivory-outline" data-edit-exp="${escapeHtml(exp.id)}">Edit</button>
-                              <button type="button" class="btn btn-sm btn-danger-ivory" data-del-exp="${escapeHtml(exp.id)}">Delete</button>
-                            </td>
-                          </tr>`
-                        )
-                        .join('')}
-                    </tbody>
-                  </table>
-                </div>`
-          }
+          <div id="expense-ledger-slot"></div>
         </section>
 
-        <div id="expense-modal" class="modal-backdrop">
+        <div id="expense-modal" class="modal-backdrop" aria-hidden="true">
           <div class="modal-panel">
             <div class="modal-header">
               <h3 id="exp-modal-title" style="font-size:24px;">Add Expense</h3>
@@ -314,69 +375,32 @@ initProtectedPage({
               </div>
               <div class="modal-footer">
                 <button type="button" class="btn btn-ivory-outline" id="cancel-exp-modal">Cancel</button>
-                <button type="submit" class="btn btn-ivory-primary">Save Expense</button>
+                <button type="submit" id="save-exp-btn" class="btn btn-ivory-primary">Save Expense</button>
               </div>
             </form>
           </div>
         </div>
       `;
 
+      renderExpenseLedger();
       renderCharts(totals);
       if (aiAdvice) renderAiAdvice();
 
       const modal = document.getElementById('expense-modal');
-      const openModal = (exp = null) => {
-        document.getElementById('exp-modal-title').textContent = exp ? 'Edit Expense' : 'Add Expense';
-        document.getElementById('exp-id').value = exp?.id || '';
-        document.getElementById('exp-title').value = exp?.title || '';
-        document.getElementById('exp-category').value = exp?.category || 'Venue';
-        document.getElementById('exp-vendor').value = exp?.vendorId || '';
-        document.getElementById('exp-est').value = exp?.estimatedCost ?? 0;
-        document.getElementById('exp-act').value = exp?.actualCost ?? 0;
-        document.getElementById('exp-status').value = exp?.paymentStatus || 'unpaid';
-        document.getElementById('exp-date').value = exp?.expenseDate || '';
-        document.getElementById('exp-notes').value = exp?.notes || '';
-        modal.classList.add('open');
-      };
-      const closeModal = () => modal.classList.remove('open');
+      const closeModal = () => closeModalElement(modal);
 
-      document.getElementById('open-add-expense').onclick = () => openModal(null);
-      document.getElementById('empty-add-expense')?.addEventListener('click', () => openModal(null));
+      document.getElementById('open-add-expense').onclick = () => openExpenseModal(null);
       document.getElementById('close-exp-modal').onclick = closeModal;
       document.getElementById('cancel-exp-modal').onclick = closeModal;
 
       document.getElementById('filter-exp-cat').onchange = (e) => {
         activeCategoryFilter = e.target.value;
-        render();
+        renderExpenseLedger();
       };
-
-      root.querySelectorAll('[data-edit-exp]').forEach((btn) => {
-        btn.onclick = () => openModal(expenses.find((x) => x.id === btn.dataset.editExp));
-      });
-
-      root.querySelectorAll('[data-del-exp]').forEach((btn) => {
-        btn.onclick = () => {
-          const target = expenses.find((x) => x.id === btn.dataset.delExp);
-          openConfirmModal({
-            title: 'Delete Expense?',
-            message: `Remove "${target?.title}" from your budget ledger?`,
-            confirmLabel: 'Delete',
-            onConfirm: async () => {
-              try {
-                await apiRequest(`${apiBase}/${encodeURIComponent(target.id)}`, { method: 'DELETE' });
-                await loadData();
-                render();
-                showToast('Expense deleted.', 'success');
-              } catch (err) {
-                showToast(err.message, 'error');
-              }
-            }
-          });
-        };
-      });
 
       document.getElementById('expense-form').onsubmit = async (e) => {
         e.preventDefault();
+        const saveBtn = document.getElementById('save-exp-btn');
         const id = document.getElementById('exp-id').value;
         const vendorId = document.getElementById('exp-vendor').value;
         const vendorObj = vendors.find((v) => v.id === vendorId);
@@ -392,6 +416,7 @@ initProtectedPage({
           notes: document.getElementById('exp-notes').value.trim()
         };
 
+        setButtonLoading(saveBtn, true, 'Saving...');
         try {
           if (id) {
             await apiRequest(`${apiBase}/${encodeURIComponent(id)}`, { method: 'PUT', body: payload });
@@ -405,6 +430,8 @@ initProtectedPage({
           render();
         } catch (err) {
           showToast(err.message, 'error');
+        } finally {
+          setButtonLoading(saveBtn, false);
         }
       };
 

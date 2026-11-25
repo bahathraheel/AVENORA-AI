@@ -6,6 +6,7 @@ import {
   openConfirmModal,
   renderIcons,
   renderNoEventState,
+  sanitizeHexColor,
   setButtonLoading,
   showToast
 } from './main.js';
@@ -46,6 +47,7 @@ initProtectedPage({
 
       const roles = theme.moodboardSpecs?.colorRoles || [];
       const panels = theme.moodboardSpecs?.moodboardPanels || [];
+      const safePalette = (theme.palette || []).map((hex) => sanitizeHexColor(hex, '#14251C'));
 
       return `
         <div class="surface-ivory panel-pad">
@@ -72,17 +74,17 @@ initProtectedPage({
 
           <h3 style="font-size:22px;margin-bottom:12px;">Color Palette Swatches (Click to copy HEX)</h3>
           <div class="swatch-row" style="margin-bottom:24px;">
-            ${(theme.palette || [])
-              .map((hex, idx) => {
+            ${safePalette
+              .map((safeHex, idx) => {
                 const role = roles[idx];
                 return `
-                  <div class="swatch-card" data-copy-hex="${escapeHtml(hex)}">
-                    <div class="swatch-color" style="background:${escapeHtml(hex)};"></div>
+                  <button type="button" class="swatch-card" data-copy-hex="${escapeHtml(safeHex)}" aria-label="Copy hex color ${escapeHtml(safeHex)}" style="text-align:left;">
+                    <div class="swatch-color" style="background:${safeHex};"></div>
                     <div style="padding:10px 12px;">
-                      <strong class="tabular-nums" style="font-size:13px;">${escapeHtml(hex)}</strong>
+                      <strong class="tabular-nums" style="font-size:13px;">${escapeHtml(safeHex)}</strong>
                       ${role ? `<div style="font-size:12px;margin-top:2px;">${escapeHtml(role.name)}</div><div class="text-muted-ivory" style="font-size:11px;">${escapeHtml(role.usage)}</div>` : ''}
                     </div>
-                  </div>`;
+                  </button>`;
               })
               .join('')}
           </div>
@@ -102,9 +104,9 @@ initProtectedPage({
                 ]
             )
               .map((panel, idx) => {
-                const bg = theme.palette?.[idx % (theme.palette?.length || 1)] || '#14251C';
+                const bg = safePalette[idx % (safePalette.length || 1)] || '#14251C';
                 return `
-                  <div class="moodboard-placeholder-panel" style="background:linear-gradient(155deg, ${escapeHtml(bg)}18, #FFFFFF);">
+                  <div class="moodboard-placeholder-panel" style="background:linear-gradient(155deg, ${bg}18, #FFFFFF);">
                     <div class="meta-inline" style="font-size:11.5px;color:rgba(20,37,28,0.68);">
                       <span>Moodboard Placeholder ${idx + 1}</span>
                       <span class="meta-sep">·</span>
@@ -157,15 +159,15 @@ initProtectedPage({
               <p class="text-muted-dark" style="font-size:14px;">Develop palettes, florals, lighting, materials, and side-by-side aesthetic directions.</p>
             </div>
             <form id="theme-gen-form" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-              <input id="theme-direction" class="field-input field-input-dark" style="min-width:260px;" placeholder="e.g., Candlelit botanical conservatory with brass" />
+              <input id="theme-direction" class="field-input field-input-dark" style="min-width:260px;" aria-label="Theme mood and style direction" placeholder="e.g., Candlelit botanical conservatory with brass" />
               <button type="submit" id="gen-theme-btn" class="btn btn-primary">${draftTheme ? 'Regenerate Theme' : 'Generate Theme Concept'}</button>
             </form>
           </div>
-          <div id="theme-loader" style="margin-top:12px;"></div>
+          <div id="theme-loader" style="margin-top:12px;" aria-live="polite"></div>
         </section>
 
-        <div style="display:grid;grid-template-columns:280px 1fr;gap:20px;align-items:start;">
-          <aside class="surface-ivory panel-pad">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:20px;align-items:start;">
+          <aside class="surface-ivory panel-pad" style="max-width:380px;">
             <h2 style="font-size:22px;margin-bottom:12px;">Saved Themes (${savedThemes.length})</h2>
             ${
               savedThemes.length === 0
@@ -175,16 +177,16 @@ initProtectedPage({
                       .map(
                         (t) => `
                         <div style="padding:12px;border-radius:10px;border:var(--border-ivory);background:${draftTheme?.id === t.id ? '#14251C' : '#fff'};color:${draftTheme?.id === t.id ? '#F5F3ED' : '#14251C'};">
-                          <div style="font-weight:600;font-size:14px;cursor:pointer;" data-open-theme="${escapeHtml(t.id)}">${escapeHtml(t.name)}</div>
+                          <button type="button" style="background:none;border:none;padding:0;color:inherit;text-align:left;width:100%;font-weight:600;font-size:14px;cursor:pointer;" data-open-theme="${escapeHtml(t.id)}">${escapeHtml(t.name)}</button>
                           <div style="display:flex;gap:4px;margin-block:8px;">
-                            ${(t.palette || []).map((hex) => `<span style="width:18px;height:18px;border-radius:4px;background:${escapeHtml(hex)};border:1px solid rgba(0,0,0,0.12);"></span>`).join('')}
+                            ${(t.palette || []).map((hex) => `<span style="width:18px;height:18px;border-radius:4px;background:${sanitizeHexColor(hex, '#14251C')};border:1px solid rgba(0,0,0,0.12);"></span>`).join('')}
                           </div>
                           <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;">
                             <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
                               <input type="checkbox" data-compare-theme="${escapeHtml(t.id)}" ${compareIds.includes(t.id) ? 'checked' : ''} />
                               <span>Compare</span>
                             </label>
-                            <button type="button" data-del-theme="${escapeHtml(t.id)}" style="background:none;border:none;color:inherit;opacity:0.75;cursor:pointer;">Delete</button>
+                            <button type="button" data-del-theme="${escapeHtml(t.id)}" style="background:none;border:none;color:inherit;opacity:0.8;cursor:pointer;">Delete</button>
                           </div>
                         </div>`
                       )
@@ -193,14 +195,14 @@ initProtectedPage({
             }
           </aside>
 
-          <div class="module-stack">
+          <div class="module-stack" style="grid-column:span 2 / span 2;">
             ${renderThemeSheet(draftTheme, isCurrentSaved)}
 
             ${
               compared.length >= 2
                 ? `<section class="surface-ivory panel-pad">
                     <h2 style="font-size:24px;margin-bottom:14px;">Theme Comparison</h2>
-                    <div style="display:grid;grid-template-columns:repeat(${Math.min(2, compared.length)},1fr);gap:16px;">
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;">
                       ${compared
                         .slice(0, 2)
                         .map(
@@ -208,7 +210,7 @@ initProtectedPage({
                           <div style="padding:16px;background:#fff;border-radius:10px;border:var(--border-ivory);">
                             <h3 style="font-size:22px;margin-bottom:6px;">${escapeHtml(c.name)}</h3>
                             <div style="display:flex;gap:6px;margin-bottom:10px;">
-                              ${(c.palette || []).map((h) => `<span style="width:24px;height:24px;border-radius:6px;background:${escapeHtml(h)};"></span>`).join('')}
+                              ${(c.palette || []).map((h) => `<span style="width:24px;height:24px;border-radius:6px;background:${sanitizeHexColor(h, '#14251C')};"></span>`).join('')}
                             </div>
                             <p class="text-muted-ivory" style="font-size:13px;margin-bottom:8px;"><strong>Lighting:</strong> ${escapeHtml(c.lighting)}</p>
                             <p class="text-muted-ivory" style="font-size:13px;margin-bottom:8px;"><strong>Florals:</strong> ${escapeHtml(c.floral)}</p>
@@ -246,6 +248,8 @@ initProtectedPage({
 
       document.getElementById('save-theme-btn')?.addEventListener('click', async () => {
         if (!draftTheme) return;
+        const saveBtn = document.getElementById('save-theme-btn');
+        setButtonLoading(saveBtn, true, 'Saving...');
         try {
           const res = await apiRequest(apiBase, { method: 'POST', body: draftTheme });
           draftTheme = res.theme;
@@ -253,6 +257,7 @@ initProtectedPage({
           render();
           showToast('Theme saved to studio library.', 'success');
         } catch (err) {
+          setButtonLoading(saveBtn, false);
           showToast(err.message, 'error');
         }
       });

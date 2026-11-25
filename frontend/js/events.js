@@ -1,6 +1,7 @@
 import { buildApiUrl } from '../config/apiConfig.js';
 import { apiRequest, callAiEndpoint } from './api.js';
 import {
+  closeModalElement,
   copyToClipboard,
   escapeHtml,
   formatCurrency,
@@ -8,6 +9,7 @@ import {
   getDaysUntil,
   initProtectedPage,
   openConfirmModal,
+  openModalElement,
   renderIcons,
   setButtonLoading,
   setStoredEventId,
@@ -118,10 +120,10 @@ function renderEventsDirectory(root, events, activeEvent) {
               .join('')}
           </div>`
     }
-    <div id="edit-event-modal" class="modal-backdrop">
-      <div class="modal-panel">
+    <div id="edit-event-modal" class="modal-backdrop" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="edit-event-modal-title">
         <div class="modal-header">
-          <h3 style="font-size:24px;">Edit Event Details</h3>
+          <h3 id="edit-event-modal-title" style="font-size:24px;">Edit Event Details</h3>
           <button type="button" class="btn btn-sm btn-ivory-outline" id="close-edit-event">Close</button>
         </div>
         <form id="edit-event-form" style="display:flex;flex-direction:column;gap:14px;">
@@ -149,7 +151,7 @@ function renderEventsDirectory(root, events, activeEvent) {
             <label class="field-label" for="edit-ev-location">Location</label>
             <input id="edit-ev-location" class="field-input" required maxlength="200" />
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;">
             <div class="field-group">
               <label class="field-label" for="edit-ev-guests">Guests</label>
               <input id="edit-ev-guests" type="number" min="1" class="field-input" required />
@@ -167,7 +169,7 @@ function renderEventsDirectory(root, events, activeEvent) {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-ivory-outline" id="cancel-edit-event">Cancel</button>
-            <button type="submit" class="btn btn-ivory-primary">Save Changes</button>
+            <button type="submit" id="save-edit-event-btn" class="btn btn-ivory-primary">Save Changes</button>
           </div>
         </form>
       </div>
@@ -182,7 +184,7 @@ function renderEventsDirectory(root, events, activeEvent) {
   });
 
   const modal = document.getElementById('edit-event-modal');
-  const closeEdit = () => modal.classList.remove('open');
+  const closeEdit = () => closeModalElement(modal);
   document.getElementById('close-edit-event').onclick = closeEdit;
   document.getElementById('cancel-edit-event').onclick = closeEdit;
 
@@ -198,13 +200,15 @@ function renderEventsDirectory(root, events, activeEvent) {
       document.getElementById('edit-ev-guests').value = ev.guestCount;
       document.getElementById('edit-ev-budget').value = ev.budget;
       document.getElementById('edit-ev-currency').value = ev.currency || 'USD';
-      modal.classList.add('open');
+      openModalElement(modal, '#edit-ev-name');
     });
   });
 
   document.getElementById('edit-event-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const id = document.getElementById('edit-ev-id').value;
+    const saveBtn = document.getElementById('save-edit-event-btn');
+    setButtonLoading(saveBtn, true, 'Saving...');
     try {
       await apiRequest(`/api/events/${encodeURIComponent(id)}`, {
         method: 'PUT',
@@ -218,9 +222,11 @@ function renderEventsDirectory(root, events, activeEvent) {
           currency: document.getElementById('edit-ev-currency').value
         }
       });
+      closeEdit();
       showToast('Event updated.', 'success');
       window.location.reload();
     } catch (err) {
+      setButtonLoading(saveBtn, false);
       showToast(err.message, 'error');
     }
   });
@@ -285,7 +291,7 @@ function renderNineStepWizard(root, profile) {
 
         <div class="surface-ivory panel-pad">
           <div id="wizard-step-body"></div>
-          <div id="wizard-error" class="field-error" style="margin-top:12px;"></div>
+          <div id="wizard-error" class="field-error" role="alert" aria-live="polite" style="margin-top:12px;"></div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:26px;padding-top:18px;border-top:var(--border-ivory);">
             <button type="button" id="wiz-back" class="btn btn-ivory-outline" ${step === 1 ? 'disabled' : ''}>Back</button>
             <div style="display:flex;gap:10px;">
@@ -304,7 +310,7 @@ function renderNineStepWizard(root, profile) {
       body.innerHTML = `
         <p class="text-muted-ivory" style="margin-bottom:14px;">Select the category that best matches your event.</p>
         <div class="choice-grid">
-          ${EVENT_TYPES.map((t) => `<button type="button" class="choice-card ${draft.type === t ? 'selected' : ''}" data-pick-type="${escapeHtml(t)}"><strong>${escapeHtml(t)}</strong></button>`).join('')}
+          ${EVENT_TYPES.map((t) => `<button type="button" class="choice-card ${draft.type === t ? 'selected' : ''}" aria-pressed="${draft.type === t}" data-pick-type="${escapeHtml(t)}"><strong>${escapeHtml(t)}</strong></button>`).join('')}
         </div>
       `;
       body.querySelectorAll('[data-pick-type]').forEach((b) => {
@@ -362,7 +368,7 @@ function renderNineStepWizard(root, profile) {
       body.innerHTML = `
         <p class="text-muted-ivory" style="margin-bottom:14px;">Choose the visual direction and tone for your event.</p>
         <div class="choice-grid">
-          ${EVENT_STYLES.map((s) => `<button type="button" class="choice-card ${draft.style === s ? 'selected' : ''}" data-pick-style="${escapeHtml(s)}"><strong>${escapeHtml(s)}</strong></button>`).join('')}
+          ${EVENT_STYLES.map((s) => `<button type="button" class="choice-card ${draft.style === s ? 'selected' : ''}" aria-pressed="${draft.style === s}" data-pick-style="${escapeHtml(s)}"><strong>${escapeHtml(s)}</strong></button>`).join('')}
         </div>
       `;
       body.querySelectorAll('[data-pick-style]').forEach((b) => {
@@ -632,7 +638,7 @@ function renderSectionBody(sectionMeta, value, currency) {
     </div>`;
   }
   if (sectionMeta.type === 'risks' && Array.isArray(value)) {
-    return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;">
       ${value
         .map(
           (r) => `
@@ -709,13 +715,13 @@ function renderBlueprintWorkspace(root, activeEvent) {
             </div>`
       }
 
-      <div id="bp-edit-modal" class="modal-backdrop">
-        <div class="modal-panel modal-panel-lg">
+      <div id="bp-edit-modal" class="modal-backdrop" aria-hidden="true">
+        <div class="modal-panel modal-panel-lg" role="dialog" aria-modal="true" aria-labelledby="bp-edit-title">
           <div class="modal-header">
             <h3 id="bp-edit-title" style="font-size:24px;">Edit Section</h3>
             <button type="button" class="btn btn-sm btn-ivory-outline" id="bp-edit-close">Close</button>
           </div>
-          <p class="text-muted-ivory" style="font-size:13px;margin-bottom:10px;">Edit text directly or adjust structured JSON items below.</p>
+          <label class="text-muted-ivory" for="bp-edit-textarea" style="display:block;font-size:13px;margin-bottom:10px;">Edit text directly or adjust structured JSON items below.</label>
           <textarea id="bp-edit-textarea" class="field-textarea" style="min-height:260px;font-family:var(--font-mono);font-size:13px;"></textarea>
           <div class="modal-footer">
             <button type="button" class="btn btn-ivory-outline" id="bp-edit-cancel">Cancel</button>
@@ -788,7 +794,7 @@ function renderBlueprintWorkspace(root, activeEvent) {
 
     const editModal = document.getElementById('bp-edit-modal');
     let editingKey = '';
-    const closeEdit = () => editModal.classList.remove('open');
+    const closeEdit = () => closeModalElement(editModal);
     document.getElementById('bp-edit-close').onclick = closeEdit;
     document.getElementById('bp-edit-cancel').onclick = closeEdit;
 
@@ -800,11 +806,12 @@ function renderBlueprintWorkspace(root, activeEvent) {
         document.getElementById('bp-edit-title').textContent = `Edit ${meta?.label || editingKey}`;
         document.getElementById('bp-edit-textarea').value =
           typeof val === 'string' ? val : JSON.stringify(val ?? [], null, 2);
-        editModal.classList.add('open');
+        openModalElement(editModal, '#bp-edit-textarea');
       };
     });
 
     document.getElementById('bp-edit-save').onclick = async () => {
+      const saveBtn = document.getElementById('bp-edit-save');
       const meta = BLUEPRINT_SECTIONS.find((s) => s.key === editingKey);
       const raw = document.getElementById('bp-edit-textarea').value;
       let nextVal = raw;
@@ -816,10 +823,15 @@ function renderBlueprintWorkspace(root, activeEvent) {
           return;
         }
       }
-      currentBlueprint = { ...(currentBlueprint || {}), [editingKey]: nextVal };
-      await persistBlueprint(currentBlueprint);
-      closeEdit();
-      draw();
+      setButtonLoading(saveBtn, true, 'Saving...');
+      try {
+        currentBlueprint = { ...(currentBlueprint || {}), [editingKey]: nextVal };
+        await persistBlueprint(currentBlueprint);
+        closeEdit();
+        draw();
+      } finally {
+        setButtonLoading(saveBtn, false);
+      }
     };
 
     renderIcons();

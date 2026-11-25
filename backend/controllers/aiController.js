@@ -9,13 +9,19 @@ import {
   generateVendorInquiry
 } from '../services/geminiService.js';
 import { buildEventContext } from '../services/firebaseService.js';
-import { sanitizeId, sanitizePositiveNumber, sanitizeText } from '../utils/sanitize.js';
+import {
+  clampInt,
+  sanitizeId,
+  sanitizeIsoDate,
+  sanitizePositiveNumber,
+  sanitizeText
+} from '../utils/sanitize.js';
 
 function sanitizeEventPayload(raw = {}) {
   return {
     name: sanitizeText(raw.name || 'Untitled Event', 160),
     type: sanitizeText(raw.type || 'Custom', 64),
-    date: sanitizeText(raw.date || '', 32),
+    date: sanitizeIsoDate(raw.date || '', 32) || sanitizeText(raw.date || '', 32),
     location: sanitizeText(raw.location || '', 200),
     guestCount: Math.max(1, Math.min(100000, Math.round(sanitizePositiveNumber(raw.guestCount, 50, 100000)))),
     budget: sanitizePositiveNumber(raw.budget, 0, 1000000000),
@@ -26,12 +32,62 @@ function sanitizeEventPayload(raw = {}) {
   };
 }
 
+function sanitizeCopilotContext(rawCtx = {}) {
+  return {
+    event: sanitizeEventPayload(rawCtx.event || {}),
+    budgetSummary: {
+      totalBudget: sanitizePositiveNumber(rawCtx.budgetSummary?.totalBudget, 0),
+      totalEstimated: sanitizePositiveNumber(rawCtx.budgetSummary?.totalEstimated, 0),
+      totalActual: sanitizePositiveNumber(rawCtx.budgetSummary?.totalActual, 0),
+      remaining: Number.isFinite(Number(rawCtx.budgetSummary?.remaining))
+        ? Number(rawCtx.budgetSummary.remaining)
+        : 0
+    },
+    taskSummary: {
+      total: clampInt(rawCtx.taskSummary?.total, 0, 5000, 0),
+      completed: clampInt(rawCtx.taskSummary?.completed, 0, 5000, 0),
+      highPriorityTitles: Array.isArray(rawCtx.taskSummary?.highPriorityTitles)
+        ? rawCtx.taskSummary.highPriorityTitles.slice(0, 10).map((t) => sanitizeText(t, 120)).filter(Boolean)
+        : []
+    },
+    guestSummary: {
+      total: clampInt(rawCtx.guestSummary?.total, 0, 100000, 0),
+      confirmed: clampInt(rawCtx.guestSummary?.confirmed, 0, 100000, 0),
+      pending: clampInt(rawCtx.guestSummary?.pending, 0, 100000, 0),
+      declined: clampInt(rawCtx.guestSummary?.declined, 0, 100000, 0)
+    },
+    vendors: Array.isArray(rawCtx.vendors)
+      ? rawCtx.vendors.slice(0, 15).map((v) => ({
+          name: sanitizeText(v?.name || '', 120),
+          category: sanitizeText(v?.category || '', 64),
+          status: sanitizeText(v?.status || '', 32)
+        }))
+      : [],
+    timeline: Array.isArray(rawCtx.timeline)
+      ? rawCtx.timeline.slice(0, 15).map((t) => ({
+          timeSlot: sanitizeText(t?.timeSlot || '', 32),
+          title: sanitizeText(t?.title || '', 160)
+        }))
+      : [],
+    activeTheme:
+      rawCtx.activeTheme && typeof rawCtx.activeTheme === 'object'
+        ? {
+            name: sanitizeText(rawCtx.activeTheme.name || '', 140),
+            description: sanitizeText(rawCtx.activeTheme.description || '', 500)
+          }
+        : null
+  };
+}
+
 export async function createEventPlanHandler(req, res, next) {
   try {
-    const event = sanitizeEventPayload(req.body?.event || req.body);
-    if (!event.name || !event.date || !event.location) {
-      return res.status(400).json({ error: 'Event name, date, and location are required.' });
+    const rawEvent = req.body?.event || req.body || {};
+    const validDate = sanitizeIsoDate(rawEvent.date || '');
+    const event = sanitizeEventPayload(rawEvent);
+    if (!event.name || !validDate || !event.location) {
+      return res.status(400).json({ error: 'Event name, valid YYYY-MM-DD date, and location are required.' });
     }
+    event.date = validDate;
     const sectionKey = req.body?.sectionKey ? sanitizeText(req.body.sectionKey, 64) : null;
     const blueprint = await generateEventBlueprint(event, sectionKey);
     return res.json({ blueprint, sectionKey });
@@ -52,16 +108,7 @@ export async function chatHandler(req, res, next) {
     if (eventId) {
       eventContext = await buildEventContext(req.user.uid, eventId);
     } else {
-      const rawCtx = req.body?.context || {};
-      eventContext = {
-        event: sanitizeEventPayload(rawCtx.event || {}),
-        budgetSummary: rawCtx.budgetSummary || {},
-        taskSummary: rawCtx.taskSummary || {},
-        guestSummary: rawCtx.guestSummary || {},
-        vendors: Array.isArray(rawCtx.vendors) ? rawCtx.vendors.slice(0, 15) : [],
-        timeline: Array.isArray(rawCtx.timeline) ? rawCtx.timeline.slice(0, 15) : [],
-        activeTheme: rawCtx.activeTheme || null
-      };
+      eventContext = sanitizeCopilotContext(req.body?.context || {});
     }
 
     const history = Array.isArray(req.body?.history)

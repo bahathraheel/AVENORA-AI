@@ -20,7 +20,7 @@ function getGeminiClient() {
   });
 }
 
-function extractGeminiErrorInfo(err) {
+export function extractGeminiErrorInfo(err) {
   const rawMsg = String(err?.message || '');
   let parsed = null;
   if (rawMsg.trim().startsWith('{')) {
@@ -38,7 +38,7 @@ function extractGeminiErrorInfo(err) {
   return { status, apiStatus, detailMsg };
 }
 
-function normalizeGeminiError(err) {
+export function normalizeGeminiError(err) {
   const { status, apiStatus, detailMsg } = extractGeminiErrorInfo(err);
 
   if (status === 429 || apiStatus === 'RESOURCE_EXHAUSTED' || detailMsg.toLowerCase().includes('quota')) {
@@ -80,7 +80,7 @@ function normalizeGeminiError(err) {
   return friendly;
 }
 
-function shouldFallbackModel(err) {
+export function shouldFallbackModel(err) {
   const { status, apiStatus, detailMsg } = extractGeminiErrorInfo(err);
   const lower = detailMsg.toLowerCase();
   return (
@@ -136,7 +136,7 @@ async function runGeminiCall(ai, paramsBuilder) {
   }
 }
 
-function parseJsonSafe(rawText, fallback) {
+export function parseJsonSafe(rawText, fallback) {
   if (!rawText) return fallback;
   const cleaned = rawText
     .trim()

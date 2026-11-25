@@ -1,9 +1,11 @@
 import { apiRequest, callAiEndpoint } from './api.js';
 import {
+  closeModalElement,
   copyToClipboard,
   escapeHtml,
   initProtectedPage,
   openConfirmModal,
+  openModalElement,
   renderIcons,
   renderNoEventState,
   setButtonLoading,
@@ -34,6 +36,128 @@ initProtectedPage({
       guests = data.guests || [];
     }
 
+    function openGuestModal(g = null) {
+      const modal = document.getElementById('guest-modal');
+      if (!modal) return;
+      document.getElementById('guest-modal-title').textContent = g ? 'Edit Guest' : 'Add Guest';
+      document.getElementById('guest-id').value = g?.id || '';
+      document.getElementById('guest-name').value = g?.name || '';
+      document.getElementById('guest-email').value = g?.email || '';
+      document.getElementById('guest-phone').value = g?.phone || '';
+      document.getElementById('guest-group').value = g?.group || 'Friends';
+      document.getElementById('guest-rsvp').value = g?.rsvpStatus || 'pending';
+      document.getElementById('guest-inv').value = g?.invitationStatus || 'not_sent';
+      document.getElementById('guest-att').value = g?.attendanceStatus || 'not_checked_in';
+      document.getElementById('guest-diet').value = g?.dietaryNotes || '';
+      document.getElementById('guest-notes').value = g?.notes || '';
+      openModalElement(modal, '#guest-name');
+    }
+
+    function renderGuestTable() {
+      const slot = document.getElementById('guest-table-slot');
+      if (!slot) return;
+      const filtered = guests.filter((g) => {
+        if (groupFilter !== 'All' && g.group !== groupFilter) return false;
+        if (rsvpFilter !== 'all' && g.rsvpStatus !== rsvpFilter) return false;
+        return true;
+      });
+
+      slot.innerHTML =
+        filtered.length === 0
+          ? `<div class="empty-state">
+              <p class="text-muted-ivory">No guests in this view yet.</p>
+              <button type="button" id="empty-add-guest" class="btn btn-ivory-primary">Add First Guest</button>
+            </div>`
+          : `<div class="data-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Group</th>
+                    <th>Contact</th>
+                    <th>Invitation</th>
+                    <th>RSVP</th>
+                    <th>Attendance</th>
+                    <th>Dietary / Notes</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${filtered
+                    .map(
+                      (g) => `
+                      <tr>
+                        <td><strong>${escapeHtml(g.name)}</strong></td>
+                        <td>${escapeHtml(g.group)}</td>
+                        <td class="text-muted-ivory" style="font-size:13px;">${escapeHtml([g.email, g.phone].filter(Boolean).join(' · ') || '—')}</td>
+                        <td style="text-transform:capitalize;">${escapeHtml(g.invitationStatus.replace('_', ' '))}</td>
+                        <td>
+                          <select class="field-select" aria-label="RSVP status for ${escapeHtml(g.name)}" style="min-height:34px;font-size:12.5px;width:auto;" data-quick-rsvp="${escapeHtml(g.id)}">
+                            <option value="pending" ${g.rsvpStatus === 'pending' ? 'selected' : ''}>Pending</option>
+                            <option value="confirmed" ${g.rsvpStatus === 'confirmed' ? 'selected' : ''}>Confirmed</option>
+                            <option value="declined" ${g.rsvpStatus === 'declined' ? 'selected' : ''}>Declined</option>
+                          </select>
+                        </td>
+                        <td style="text-transform:capitalize;">${escapeHtml(g.attendanceStatus.replace(/_/g, ' '))}</td>
+                        <td class="text-muted-ivory" style="font-size:12.5px;">${escapeHtml(g.dietaryNotes || g.notes || '—')}</td>
+                        <td style="white-space:nowrap;">
+                          <button type="button" class="btn btn-sm btn-ivory-outline" data-edit-guest="${escapeHtml(g.id)}">Edit</button>
+                          <button type="button" class="btn btn-sm btn-danger-ivory" data-del-guest="${escapeHtml(g.id)}">Delete</button>
+                        </td>
+                      </tr>`
+                    )
+                    .join('')}
+                </tbody>
+              </table>
+            </div>`;
+
+      slot.querySelector('#empty-add-guest')?.addEventListener('click', () => openGuestModal(null));
+
+      slot.querySelectorAll('[data-quick-rsvp]').forEach((sel) => {
+        sel.onchange = async () => {
+          const id = sel.dataset.quickRsvp;
+          sel.disabled = true;
+          try {
+            await apiRequest(`${apiBase}/${encodeURIComponent(id)}`, {
+              method: 'PUT',
+              body: { rsvpStatus: sel.value }
+            });
+            await loadGuests();
+            render();
+            showToast('RSVP updated.', 'success');
+          } catch (err) {
+            sel.disabled = false;
+            showToast(err.message, 'error');
+          }
+        };
+      });
+
+      slot.querySelectorAll('[data-edit-guest]').forEach((b) => {
+        b.onclick = () => openGuestModal(guests.find((x) => x.id === b.dataset.editGuest));
+      });
+
+      slot.querySelectorAll('[data-del-guest]').forEach((b) => {
+        b.onclick = () => {
+          const g = guests.find((x) => x.id === b.dataset.delGuest);
+          openConfirmModal({
+            title: 'Remove Guest?',
+            message: `Remove ${g?.name} from your guest roster?`,
+            confirmLabel: 'Remove',
+            onConfirm: async () => {
+              try {
+                await apiRequest(`${apiBase}/${encodeURIComponent(g.id)}`, { method: 'DELETE' });
+                await loadGuests();
+                render();
+                showToast('Guest removed.', 'success');
+              } catch (err) {
+                showToast(err.message, 'error');
+              }
+            }
+          });
+        };
+      });
+    }
+
     function render() {
       const counts = {
         total: guests.length,
@@ -42,12 +166,6 @@ initProtectedPage({
         declined: guests.filter((g) => g.rsvpStatus === 'declined').length,
         attended: guests.filter((g) => g.attendanceStatus === 'attended').length
       };
-
-      const filtered = guests.filter((g) => {
-        if (groupFilter !== 'All' && g.group !== groupFilter) return false;
-        if (rsvpFilter !== 'all' && g.rsvpStatus !== rsvpFilter) return false;
-        return true;
-      });
 
       root.innerHTML = `
         <section class="surface-forest panel-pad" style="margin-bottom:20px;">
@@ -63,7 +181,7 @@ initProtectedPage({
           </div>
         </section>
 
-        <section class="kpi-strip" style="grid-template-columns:repeat(5,1fr);">
+        <section class="kpi-strip" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));">
           <div class="surface-ivory kpi-card"><div style="font-size:12px;">Total Guests</div><div class="kpi-value">${counts.total}</div></div>
           <div class="surface-ivory kpi-card"><div style="font-size:12px;">Confirmed</div><div class="kpi-value status-success">${counts.confirmed}</div></div>
           <div class="surface-ivory kpi-card"><div style="font-size:12px;">Pending</div><div class="kpi-value status-warning">${counts.pending}</div></div>
@@ -75,68 +193,20 @@ initProtectedPage({
 
         <section class="surface-ivory panel-pad">
           <div class="panel-head">
-            <div class="segmented-bar">
+            <div class="segmented-bar" role="group" aria-label="Filter guests by RSVP status">
               ${['all', 'confirmed', 'pending', 'declined']
-                .map((s) => `<button type="button" class="segmented-btn ${rsvpFilter === s ? 'active' : ''}" data-rsvp-tab="${s}" style="text-transform:capitalize;">${s}</button>`)
+                .map((s) => `<button type="button" class="segmented-btn ${rsvpFilter === s ? 'active' : ''}" data-rsvp-tab="${s}" aria-pressed="${rsvpFilter === s}" style="text-transform:capitalize;">${s}</button>`)
                 .join('')}
             </div>
-            <select id="guest-group-filter" class="field-select" style="width:auto;">
+            <select id="guest-group-filter" aria-label="Filter guests by group" class="field-select" style="width:auto;">
               <option value="All">All Groups</option>
               ${GUEST_GROUPS.map((g) => `<option value="${g}" ${groupFilter === g ? 'selected' : ''}>${g}</option>`).join('')}
             </select>
           </div>
-          ${
-            filtered.length === 0
-              ? `<div class="empty-state">
-                  <p class="text-muted-ivory">No guests in this view yet.</p>
-                  <button type="button" id="empty-add-guest" class="btn btn-ivory-primary">Add First Guest</button>
-                </div>`
-              : `<div class="data-table-wrap">
-                  <table class="data-table">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Group</th>
-                        <th>Contact</th>
-                        <th>Invitation</th>
-                        <th>RSVP</th>
-                        <th>Attendance</th>
-                        <th>Dietary / Notes</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${filtered
-                        .map(
-                          (g) => `
-                          <tr>
-                            <td><strong>${escapeHtml(g.name)}</strong></td>
-                            <td>${escapeHtml(g.group)}</td>
-                            <td class="text-muted-ivory" style="font-size:13px;">${escapeHtml([g.email, g.phone].filter(Boolean).join(' · ') || '—')}</td>
-                            <td style="text-transform:capitalize;">${escapeHtml(g.invitationStatus.replace('_', ' '))}</td>
-                            <td>
-                              <select class="field-select" style="min-height:34px;font-size:12.5px;width:auto;" data-quick-rsvp="${escapeHtml(g.id)}">
-                                <option value="pending" ${g.rsvpStatus === 'pending' ? 'selected' : ''}>Pending</option>
-                                <option value="confirmed" ${g.rsvpStatus === 'confirmed' ? 'selected' : ''}>Confirmed</option>
-                                <option value="declined" ${g.rsvpStatus === 'declined' ? 'selected' : ''}>Declined</option>
-                              </select>
-                            </td>
-                            <td style="text-transform:capitalize;">${escapeHtml(g.attendanceStatus.replace(/_/g, ' '))}</td>
-                            <td class="text-muted-ivory" style="font-size:12.5px;">${escapeHtml(g.dietaryNotes || g.notes || '—')}</td>
-                            <td style="white-space:nowrap;">
-                              <button type="button" class="btn btn-sm btn-ivory-outline" data-edit-guest="${escapeHtml(g.id)}">Edit</button>
-                              <button type="button" class="btn btn-sm btn-danger-ivory" data-del-guest="${escapeHtml(g.id)}">Delete</button>
-                            </td>
-                          </tr>`
-                        )
-                        .join('')}
-                    </tbody>
-                  </table>
-                </div>`
-          }
+          <div id="guest-table-slot"></div>
         </section>
 
-        <div id="guest-modal" class="modal-backdrop">
+        <div id="guest-modal" class="modal-backdrop" aria-hidden="true">
           <div class="modal-panel">
             <div class="modal-header">
               <h3 id="guest-modal-title" style="font-size:24px;">Add Guest</h3>
@@ -202,91 +272,42 @@ initProtectedPage({
               </div>
               <div class="modal-footer">
                 <button type="button" class="btn btn-ivory-outline" id="cancel-guest-modal">Cancel</button>
-                <button type="submit" class="btn btn-ivory-primary">Save Guest</button>
+                <button type="submit" id="save-guest-btn" class="btn btn-ivory-primary">Save Guest</button>
               </div>
             </form>
           </div>
         </div>
       `;
 
-      const modal = document.getElementById('guest-modal');
-      const openModal = (g = null) => {
-        document.getElementById('guest-modal-title').textContent = g ? 'Edit Guest' : 'Add Guest';
-        document.getElementById('guest-id').value = g?.id || '';
-        document.getElementById('guest-name').value = g?.name || '';
-        document.getElementById('guest-email').value = g?.email || '';
-        document.getElementById('guest-phone').value = g?.phone || '';
-        document.getElementById('guest-group').value = g?.group || 'Friends';
-        document.getElementById('guest-rsvp').value = g?.rsvpStatus || 'pending';
-        document.getElementById('guest-inv').value = g?.invitationStatus || 'not_sent';
-        document.getElementById('guest-att').value = g?.attendanceStatus || 'not_checked_in';
-        document.getElementById('guest-diet').value = g?.dietaryNotes || '';
-        document.getElementById('guest-notes').value = g?.notes || '';
-        modal.classList.add('open');
-      };
-      const closeModal = () => modal.classList.remove('open');
+      renderGuestTable();
 
-      document.getElementById('open-add-guest').onclick = () => openModal(null);
-      document.getElementById('empty-add-guest')?.addEventListener('click', () => openModal(null));
+      const modal = document.getElementById('guest-modal');
+      const closeModal = () => closeModalElement(modal);
+
+      document.getElementById('open-add-guest').onclick = () => openGuestModal(null);
       document.getElementById('close-guest-modal').onclick = closeModal;
       document.getElementById('cancel-guest-modal').onclick = closeModal;
 
       root.querySelectorAll('[data-rsvp-tab]').forEach((b) => {
         b.onclick = () => {
           rsvpFilter = b.dataset.rsvpTab;
-          render();
+          root.querySelectorAll('[data-rsvp-tab]').forEach((tab) => {
+            const active = tab.dataset.rsvpTab === rsvpFilter;
+            tab.classList.toggle('active', active);
+            tab.setAttribute('aria-pressed', String(active));
+          });
+          renderGuestTable();
         };
       });
 
       document.getElementById('guest-group-filter').onchange = (e) => {
         groupFilter = e.target.value;
-        render();
+        renderGuestTable();
       };
-
-      root.querySelectorAll('[data-quick-rsvp]').forEach((sel) => {
-        sel.onchange = async () => {
-          const id = sel.dataset.quickRsvp;
-          try {
-            await apiRequest(`${apiBase}/${encodeURIComponent(id)}`, {
-              method: 'PUT',
-              body: { rsvpStatus: sel.value }
-            });
-            await loadGuests();
-            render();
-            showToast('RSVP updated.', 'success');
-          } catch (err) {
-            showToast(err.message, 'error');
-          }
-        };
-      });
-
-      root.querySelectorAll('[data-edit-guest]').forEach((b) => {
-        b.onclick = () => openModal(guests.find((x) => x.id === b.dataset.editGuest));
-      });
-
-      root.querySelectorAll('[data-del-guest]').forEach((b) => {
-        b.onclick = () => {
-          const g = guests.find((x) => x.id === b.dataset.delGuest);
-          openConfirmModal({
-            title: 'Remove Guest?',
-            message: `Remove ${g?.name} from your guest roster?`,
-            confirmLabel: 'Remove',
-            onConfirm: async () => {
-              try {
-                await apiRequest(`${apiBase}/${encodeURIComponent(g.id)}`, { method: 'DELETE' });
-                await loadGuests();
-                render();
-                showToast('Guest removed.', 'success');
-              } catch (err) {
-                showToast(err.message, 'error');
-              }
-            }
-          });
-        };
-      });
 
       document.getElementById('guest-form').onsubmit = async (e) => {
         e.preventDefault();
+        const saveBtn = document.getElementById('save-guest-btn');
         const id = document.getElementById('guest-id').value;
         const payload = {
           name: document.getElementById('guest-name').value.trim(),
@@ -299,6 +320,7 @@ initProtectedPage({
           dietaryNotes: document.getElementById('guest-diet').value.trim(),
           notes: document.getElementById('guest-notes').value.trim()
         };
+        setButtonLoading(saveBtn, true, 'Saving...');
         try {
           if (id) {
             await apiRequest(`${apiBase}/${encodeURIComponent(id)}`, { method: 'PUT', body: payload });
@@ -312,6 +334,8 @@ initProtectedPage({
           render();
         } catch (err) {
           showToast(err.message, 'error');
+        } finally {
+          setButtonLoading(saveBtn, false);
         }
       };
 
@@ -331,7 +355,7 @@ initProtectedPage({
               <p class="text-muted-dark" style="font-size:13px;">Create WhatsApp, Email, Formal, Casual, Traditional, Modern, and Custom invitations.</p>
             </div>
           </div>
-          <form id="invite-gen-form" style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end;">
+          <form id="invite-gen-form" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;align-items:end;">
             <div class="field-group">
               <label class="field-label" for="inv-tone">Tone / Direction</label>
               <input id="inv-tone" class="field-input field-input-dark" value="${escapeHtml(activeEvent.style)} & Warm" />
@@ -404,7 +428,7 @@ initProtectedPage({
         </div>
       `;
       area.querySelectorAll('[data-copy-inv]').forEach((b) => {
-        b.onclick = () => copyToClipboard(cards[Number(b.dataset.copyInv)].text || '', 'Invitation copied.');
+        b.onclick = () => copyToClipboard(cards[Number(b.dataset.copyInq ?? b.dataset.copyInv)].text || '', 'Invitation copied.');
       });
     }
 

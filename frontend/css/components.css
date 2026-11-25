@@ -245,7 +245,7 @@
 }
 
 .field-input-dark::placeholder, .field-textarea-dark::placeholder {
-  color: rgba(245, 243, 237, 0.45);
+  color: rgba(245, 243, 237, 0.62);
 }
 
 .field-error {
@@ -290,7 +290,7 @@
   padding: 12px 14px;
   font-size: 12px;
   font-weight: 600;
-  color: rgba(20, 37, 28, 0.65);
+  color: rgba(20, 37, 28, 0.76);
   border-bottom: 1px solid rgba(20, 37, 28, 0.14);
   white-space: nowrap;
 }

@@ -15,9 +15,12 @@ import {
 } from './firestoreRestClient.js';
 import {
   clampInt,
+  sanitizeBlueprint,
   sanitizeEnum,
+  sanitizeHexColor,
   sanitizeId,
   sanitizeIsoDate,
+  sanitizeMoodboardSpecs,
   sanitizePositiveNumber,
   sanitizeText,
   serializeFirestoreValue
@@ -233,7 +236,7 @@ export async function createEvent(uid, payload = {}, explicitToken = '') {
   };
 
   if (payload.blueprint && typeof payload.blueprint === 'object') {
-    docData.blueprint = payload.blueprint;
+    docData.blueprint = sanitizeBlueprint(payload.blueprint);
   }
 
   if (hasAdminCredentials()) {
@@ -261,7 +264,13 @@ export async function updateEvent(uid, eventId, payload = {}, explicitToken = ''
     updates.type = sanitizeText(payload.type, 64);
   }
   if (typeof payload.date === 'string' && payload.date.trim()) {
-    updates.date = sanitizeIsoDate(payload.date);
+    const validDate = sanitizeIsoDate(payload.date);
+    if (!validDate) {
+      const err = new Error('Event date must be a valid YYYY-MM-DD date.');
+      err.statusCode = 400;
+      throw err;
+    }
+    updates.date = validDate;
   }
   if (typeof payload.location === 'string' && payload.location.trim()) {
     updates.location = sanitizeText(payload.location, 200);
@@ -298,23 +307,19 @@ export async function updateEvent(uid, eventId, payload = {}, explicitToken = ''
 }
 
 export async function updateEventBlueprint(uid, eventId, blueprint, explicitToken = '') {
-  if (!blueprint || typeof blueprint !== 'object' || Array.isArray(blueprint)) {
-    const err = new Error('Blueprint payload must be an object.');
-    err.statusCode = 400;
-    throw err;
-  }
+  const safeBlueprint = sanitizeBlueprint(blueprint);
   const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
 
   if (hasAdminCredentials()) {
     await ref.update({
-      blueprint,
+      blueprint: safeBlueprint,
       updatedAt: FieldValue.serverTimestamp()
     });
     const fresh = await ref.get();
     return formatDoc(fresh);
   }
 
-  return updateDocRest(`users/${uid}/events/${safeEventId}`, { blueprint }, ['updatedAt'], token);
+  return updateDocRest(`users/${uid}/events/${safeEventId}`, { blueprint: safeBlueprint }, ['updatedAt'], token);
 }
 
 export async function deleteEvent(uid, eventId, explicitToken = '') {
@@ -1125,19 +1130,25 @@ export async function reorderTimelineItems(uid, eventId, pairs = [], explicitTok
   if (!Array.isArray(pairs) || pairs.length === 0) return [];
 
   if (hasAdminCredentials()) {
+    const snap = await ref.collection('timeline').where('ownerId', '==', uid).get();
+    const ownedRefs = new Map(snap.docs.map((d) => [d.id, d.ref]));
     const batch = adminDb.batch();
+    let writeCount = 0;
+
     for (const item of pairs.slice(0, 100)) {
       const safeId = sanitizeId(item?.id);
-      if (!safeId) continue;
-      const docRef = ref.collection('timeline').doc(safeId);
-      const snap = await docRef.get();
-      if (!snap.exists || snap.data()?.ownerId !== uid) continue;
+      const docRef = safeId ? ownedRefs.get(safeId) : null;
+      if (!docRef) continue;
       batch.update(docRef, {
         orderIndex: clampInt(item.orderIndex, 0, 1000, 0),
         updatedAt: FieldValue.serverTimestamp()
       });
+      writeCount += 1;
     }
-    await batch.commit();
+
+    if (writeCount > 0) {
+      await batch.commit();
+    }
     return listTimeline(uid, safeEventId);
   }
 
@@ -1206,12 +1217,14 @@ export async function listThemes(uid, eventId, explicitToken = '') {
 
 export async function createTheme(uid, eventId, payload = {}, explicitToken = '') {
   const { ref, safeEventId, token } = await assertEventOwnership(uid, eventId, explicitToken);
-  const safePalette = (Array.isArray(payload.palette) && payload.palette.length > 0
-    ? payload.palette
-    : ['#14251C', '#A3B59A', '#F5F3ED']
-  )
-    .slice(0, 8)
-    .map((c) => sanitizeText(String(c), 16));
+  const rawPalette = Array.isArray(payload.palette) ? payload.palette : [];
+  const safePalette = rawPalette
+    .map((c) => sanitizeHexColor(c, ''))
+    .filter(Boolean)
+    .slice(0, 8);
+  if (safePalette.length === 0) {
+    safePalette.push('#14251C', '#A3B59A', '#F5F3ED');
+  }
 
   const docData = {
     ownerId: uid,
@@ -1228,7 +1241,7 @@ export async function createTheme(uid, eventId, payload = {}, explicitToken = ''
     invitationConcept: sanitizeText(payload.invitationConcept || '', 800),
     materials: sanitizeText(payload.materials || '', 800),
     budgetAlternatives: sanitizeText(payload.budgetAlternatives || '', 1000),
-    moodboardSpecs: payload.moodboardSpecs && typeof payload.moodboardSpecs === 'object' ? payload.moodboardSpecs : {}
+    moodboardSpecs: sanitizeMoodboardSpecs(payload.moodboardSpecs)
   };
 
   if (hasAdminCredentials()) {
